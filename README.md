@@ -41,6 +41,11 @@ Four more views share the screen with the opportunities:
   comes. A scene opens on the globe, draped over the map, and downloads as
   GeoTIFF: the area cut out of the scene (Planetary Computer), the whole
   scene in true colour (Earth Search) or its bands (CBERS, Amazonia).
+  NASA's daily MODIS and VIIRS views of the region (last 14 days) come
+  along on request, as GeoTIFF too.
+- Daily view: NASA's view of a recent day (Terra or Aqua MODIS, Suomi NPP,
+  NOAA-20 or NOAA-21 VIIRS) over the whole globe, to see where the clouds
+  were.
 
 The page's address follows the screen (area, polygon included, view,
 satellite, opportunity, forecast span), so "Share" copies a link that opens
@@ -83,6 +88,9 @@ trunk build --release
   AWS when the browser cannot reach it (privacy extensions often block it);
   INPE's [Brazil Data Cube](https://data.inpe.br/bdc/) for CBERS-4, CBERS-4A
   and Amazonia-1 (Level 4).
+- Daily views: NASA's [GIBS](https://www.earthdata.nasa.gov/gibs) map tiles
+  and [Worldview](https://worldview.earthdata.nasa.gov) snapshots (MODIS and
+  VIIRS Corrected Reflectance).
 - Cloud forecast and place names: [Open-Meteo.com](https://open-meteo.com)
   (CC BY 4.0), with [GeoNames](https://www.geonames.org) for places.
 - Base maps: [Sentinel-2 cloudless](https://s2maps.eu) by EOX IT Services GmbH

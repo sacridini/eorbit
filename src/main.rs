@@ -14,7 +14,7 @@ mod sky;
 mod ui;
 
 use leptos::prelude::*;
-use model::{Model, View};
+use model::{Model, Sky, View};
 use orbitui::orbit::{Observer, format_coords};
 use wasm_bindgen::JsCast;
 use wasm_bindgen::closure::Closure;
@@ -84,6 +84,7 @@ fn App() -> impl IntoView {
     Effect::new(move |_| globe::set_selected(m.selected_index().map_or(-1, |i| i as i32)));
     Effect::new(move |_| m.observer.with(globe::aoi));
     Effect::new(move |_| globe::set_base(m.base.get().id()));
+    Effect::new(move |_| globe::set_sky(&m.sky.get().map(Sky::tiles).unwrap_or_default()));
     Effect::new(move |_| globe::set_labels(m.labels.get()));
     Effect::new(move |_| globe::set_picking(m.picking.get()));
     Effect::new(move |_| {

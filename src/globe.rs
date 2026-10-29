@@ -34,6 +34,9 @@ extern "C" {
     /// east, north, rings}], with their outline colour.
     #[wasm_bindgen(js_name = setScenes)]
     pub fn set_scenes(json: &str, color: &str);
+    /// NASA's daily view over the globe: its tiles' address, "" for none.
+    #[wasm_bindgen(js_name = setSky)]
+    pub fn set_sky(url: &str);
     #[wasm_bindgen(js_name = flyToBox)]
     pub fn fly_to_box(west: f64, south: f64, east: f64, north: f64);
     #[wasm_bindgen(js_name = setActive)]

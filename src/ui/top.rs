@@ -1,7 +1,8 @@
 //! The bar at the top: the area of interest, the map and the data status.
 
+use crate::archive::{self, Mission};
 use crate::fmt;
-use crate::model::{Base, Model, View};
+use crate::model::{Base, Model, Sky, View};
 use leptos::html;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
@@ -285,8 +286,65 @@ pub fn GlobeTools() -> impl IntoView {
                 </svg>
                 <span>"Reset view"</span>
             </button>
+            <SkyTool/>
             <SceneChip/>
         </div>
+    }
+}
+
+/// NASA's view of a recent day over the whole globe: which day, which
+/// satellite.
+#[component]
+fn SkyTool() -> impl IntoView {
+    let m = expect_context::<Model>();
+    let step = move |by: i64| m.sky.update(|s| if let Some(s) = s { s.back = (s.back + by).clamp(0, Sky::MAX_BACK) });
+    move || match m.sky.get() {
+        None => view! {
+            <button
+                class="tool floating"
+                title="Lay NASA's view of a recent day over the whole globe (MODIS, VIIRS), to see its clouds"
+                on:click=move |_| m.sky.set(Some(Sky::LATEST))
+            >
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M7 18h10a4 4 0 0 0 .5-8 6 6 0 0 0-11.5 1.5A3.3 3.3 0 0 0 7 18z"/>
+                </svg>
+                <span>"Daily view"</span>
+            </button>
+        }
+        .into_any(),
+        Some(sky) => {
+            let day = if sky.back == 0 { "today, so far".to_string() } else { sky.date().format("%a %-d %b").to_string() };
+            view! {
+                <div class="sky-tool floating" role="group" aria-label="NASA's daily view">
+                    <button class="step" title="The day before" aria-label="The day before" disabled={sky.back >= Sky::MAX_BACK} on:click=move |_| step(1)>
+                        "‹"
+                    </button>
+                    <span class="sky-day">{day}</span>
+                    <button class="step" title="The day after" aria-label="The day after" disabled={sky.back == 0} on:click=move |_| step(-1)>
+                        "›"
+                    </button>
+                    <select
+                        aria-label="Satellite"
+                        on:change=move |e| {
+                            let layer = event_target_value(&e).parse().unwrap_or(Sky::LATEST.layer);
+                            m.sky.update(|s| if let Some(s) = s { s.layer = layer });
+                        }
+                    >
+                        {archive::DAILY
+                            .iter()
+                            .enumerate()
+                            .map(|(i, (sat, camera, ..))| {
+                                view! { <option value=i.to_string() selected={i == sky.layer}>{format!("{sat} {camera}")}</option> }
+                            })
+                            .collect_view()}
+                    </select>
+                    <button class="close" title="Take the daily view off" aria-label="Take the daily view off" on:click=move |_| m.sky.set(None)>
+                        "×"
+                    </button>
+                </div>
+            }
+            .into_any()
+        }
     }
 }
 
@@ -297,8 +355,12 @@ fn SceneChip() -> impl IntoView {
     move || {
         let pass = m.scene.get()?;
         let utc = m.utc.get();
-        let name = m.platform_sat(&pass.platform).map_or_else(|| pass.platform.clone(), |i| i.name.to_string());
-        let mut text = format!("{name} image of {}, {}", fmt::day(pass.time, utc), fmt::hm(pass.time, utc));
+        let name = m.pass_name(&pass);
+        let mut text = if pass.mission == Mission::Daily {
+            format!("{name} daily view of {}", fmt::day(pass.time, utc))
+        } else {
+            format!("{name} image of {}, {}", fmt::day(pass.time, utc), fmt::hm(pass.time, utc))
+        };
         if let Some(c) = pass.cloud().filter(|_| pass.mission.optical()) {
             text.push_str(&format!(", {c:.0}% cloud"));
         }

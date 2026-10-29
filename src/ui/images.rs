@@ -2,7 +2,7 @@
 //! cloudy, and the scenes themselves, on the page and on the globe.
 
 use super::scale;
-use crate::archive::{Catalogue, Mission, Pass};
+use crate::archive::{self, Catalogue, Mission, Pass};
 use crate::fmt;
 use crate::model::Model;
 use chrono::Utc;
@@ -16,7 +16,8 @@ pub const CLEAR: f64 = 20.0;
 #[component]
 pub fn Images() -> impl IntoView {
     let m = expect_context::<Model>();
-    let missions = RwSignal::new(Mission::ALL.to_vec());
+    // The daily views (five a day, hundreds of metres a pixel) wait to be asked for.
+    let missions = RwSignal::new(Mission::ALL.into_iter().filter(|&m| m != Mission::Daily).collect::<Vec<_>>());
     let clear_only = RwSignal::new(false);
 
     let shown = Memo::new(move |_| {
@@ -97,9 +98,10 @@ pub fn Images() -> impl IntoView {
                     {move || {
                         let from = m.archive.with(|a| a.catalogue).unwrap_or(Catalogue::PlanetaryComputer);
                         let mut text = format!(
-                            "Scenes already acquired over the area, from the catalogues of {} and {} (CBERS, Amazonia). Cloud is each scene's own estimate, over the whole scene; a scene opens on the globe.",
+                            "Scenes already acquired over the area, from the catalogues of {} and {} (CBERS, Amazonia), and NASA's daily views of the region (MODIS/VIIRS, last {} days). Cloud is each scene's own estimate, over the whole scene; a scene opens on the globe.",
                             from.label(),
-                            Catalogue::BrazilDataCube.label()
+                            Catalogue::BrazilDataCube.label(),
+                            archive::DAILY_DAYS
                         );
                         if from == Catalogue::EarthSearch {
                             text.push_str(&format!(
@@ -209,17 +211,14 @@ fn Strip(shown: Memo<Vec<Pass>>) -> impl IntoView {
 fn Card(pass: Pass) -> impl IntoView {
     let m = expect_context::<Model>();
     let scene = pass.main().clone();
-    let info = m.platform_sat(&pass.platform);
-    let mut name = info.map_or_else(|| pass.platform.clone(), |i| i.name.to_string());
-    if let Some(camera) = pass.instrument.as_ref().filter(|_| pass.mission.names_instrument()) {
-        name = format!("{name} {camera}");
-    }
+    let name = m.pass_name(&pass);
     let downloads = pass.downloads();
     let color = m.platform_color(&pass.platform);
     let time = pass.time;
     let utc = m.utc;
     let cloud = pass.cloud();
     let optical = pass.mission.optical();
+    let daily = pass.mission == Mission::Daily;
     let mut notes = vec![fmt::relative(Utc::now(), time)];
     if pass.scenes.len() > 1 {
         notes.push(format!("{} scenes", pass.scenes.len()));
@@ -252,7 +251,13 @@ fn Card(pass: Pass) -> impl IntoView {
             </button>
             <div class="scene-meta">
                 <strong>{name}</strong>
-                <span>{move || format!("{}, {}", fmt::day(time, utc.get()), fmt::hm(time, utc.get()))}</span>
+                <span>
+                    {move || {
+                        // A daily view's time is only the satellite's usual one.
+                        let at = if daily { "daily view".to_string() } else { fmt::hm(time, utc.get()) };
+                        format!("{}, {at}", fmt::day(time, utc.get()))
+                    }}
+                </span>
                 <span class="muted">{notes.join(" · ")}</span>
             </div>
             <div class="scene-actions">

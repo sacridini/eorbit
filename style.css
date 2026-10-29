@@ -1461,3 +1461,41 @@ h2 {
 }
 
 .downloads a:hover { background: var(--hover); }
+
+/* NASA's daily view over the globe: the day and the satellite. */
+.sky-tool {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 34px;
+  padding: 0 4px;
+  border: 1px solid var(--line-strong);
+  border-radius: 9px;
+  font-size: 12.5px;
+}
+
+.sky-tool .step,
+.sky-tool .close {
+  width: 26px;
+  height: 26px;
+  border-radius: 7px;
+  font-size: 18px;
+  line-height: 1;
+}
+
+.sky-tool .step:disabled { opacity: 0.3; cursor: default; }
+.sky-tool .sky-day { min-width: 96px; text-align: center; font-variant-numeric: tabular-nums; }
+
+.sky-tool select {
+  height: 26px;
+  padding: 0 6px;
+  color: var(--ink);
+  font: inherit;
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+}
+
+.sky-tool option { color: #000; }
+.sky-tool .step { color: var(--muted); }
+.sky-tool .step:hover:not(:disabled) { color: var(--ink); background: var(--hover); }

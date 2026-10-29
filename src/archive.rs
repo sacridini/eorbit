@@ -5,8 +5,11 @@
 //! - Element 84's Earth Search on AWS, which stands in for it when the
 //!   browser cannot reach it (privacy extensions block it);
 //! - INPE's Brazil Data Cube (CBERS-4, CBERS-4A, Amazonia-1).
+//!
+//! NASA's daily views of the whole Earth (MODIS, VIIRS) come from GIBS and
+//! Worldview, by date: no search is needed.
 
-use chrono::{DateTime, SecondsFormat, Utc};
+use chrono::{DateTime, Duration, NaiveDate, NaiveTime, SecondsFormat, Utc};
 use orbitui::aoi;
 use orbitui::orbit::Observer;
 use serde_json::{Value, json};
@@ -98,10 +101,13 @@ pub enum Mission {
     Sentinel1,
     Cbers,
     Amazonia,
+    /// NASA's daily views (MODIS, VIIRS).
+    Daily,
 }
 
 impl Mission {
-    pub const ALL: [Mission; 5] = [Mission::Sentinel2, Mission::Landsat, Mission::Sentinel1, Mission::Cbers, Mission::Amazonia];
+    pub const ALL: [Mission; 6] =
+        [Mission::Sentinel2, Mission::Landsat, Mission::Sentinel1, Mission::Cbers, Mission::Amazonia, Mission::Daily];
 
     pub fn label(self) -> &'static str {
         match self {
@@ -110,6 +116,7 @@ impl Mission {
             Mission::Sentinel1 => "Sentinel-1",
             Mission::Cbers => "CBERS-4/4A",
             Mission::Amazonia => "Amazonia-1",
+            Mission::Daily => "MODIS/VIIRS",
         }
     }
 
@@ -120,7 +127,7 @@ impl Mission {
 
     /// Whether its satellites carry several cameras worth naming.
     pub fn names_instrument(self) -> bool {
-        self == Mission::Cbers
+        matches!(self, Mission::Cbers | Mission::Daily)
     }
 }
 
@@ -145,6 +152,8 @@ pub struct Scene {
     pub cloud: Option<f64>,
     pub preview: Option<String>,
     pub tilejson: Option<String>,
+    /// Its map tiles' address ({z}/{x}/{y}), where it needs no tilejson.
+    pub tiles: Option<String>,
     /// A north-up picture of the scene filling its bbox, laid on the globe
     /// where there are no map tiles (the Data Cube's thumbnails, on a white
     /// ground).
@@ -319,6 +328,7 @@ fn scene(f: &Value, mission: Mission, obs: &Observer) -> Option<Scene> {
             .map(|u| format!("{u}&max_size={PREVIEW_PX}"))
             .or_else(|| asset("thumbnail").filter(|u| u.starts_with("https://"))),
         tilejson: asset("tilejson"),
+        tiles: None,
         snapshot: matches!(mission, Mission::Cbers | Mission::Amazonia).then(|| asset("thumbnail")).flatten(),
         page: f["links"]
             .as_array()
@@ -420,6 +430,89 @@ pub fn passes(mut scenes: Vec<Scene>) -> Vec<Pass> {
     out
 }
 
+/// NASA's daily true-colour views: satellite, camera, GIBS layer, local
+/// solar time of the daytime pass, and pixel size in degrees.
+pub const DAILY: [(&str, &str, &str, f64, f64); 5] = [
+    ("Terra", "MODIS", "MODIS_Terra_CorrectedReflectance_TrueColor", 10.5, 0.00225),
+    ("Aqua", "MODIS", "MODIS_Aqua_CorrectedReflectance_TrueColor", 13.5, 0.00225),
+    ("Suomi NPP", "VIIRS", "VIIRS_SNPP_CorrectedReflectance_TrueColor", 13.5, 0.0034),
+    ("NOAA-20", "VIIRS", "VIIRS_NOAA20_CorrectedReflectance_TrueColor", 12.7, 0.0034),
+    ("NOAA-21", "VIIRS", "VIIRS_NOAA21_CorrectedReflectance_TrueColor", 13.1, 0.0034),
+];
+/// Days of daily views listed, back from yesterday (today's are not whole
+/// before the evening).
+pub const DAILY_DAYS: i64 = 14;
+/// Half the side of the region a daily view shows around the area, at
+/// least, in degrees of latitude: its pixels are hundreds of metres.
+const REGION_HALF_DEG: f64 = 0.8;
+const GIBS_TILES: &str = "https://gibs.earthdata.nasa.gov/wmts/epsg3857/best";
+const SNAPSHOT: &str = "https://wvs.earthdata.nasa.gov/api/v1/snapshot";
+
+/// The daily views of the region around the area, for the days before
+/// `now` (UTC dates, as GIBS names them).
+pub fn daily(obs: &Observer, now: DateTime<Utc>) -> Vec<Scene> {
+    let area = area_box(obs);
+    let region = region_box(area);
+    let [w, s, e, n] = region;
+    let ring = vec![(s, w), (s, e), (n, e), (n, w), (s, w)];
+    (1..=DAILY_DAYS)
+        .flat_map(|back| {
+            let date = (now - Duration::days(back)).date_naive();
+            let ring = &ring;
+            DAILY.iter().map(move |&(platform, camera, layer, solar_h, deg)| {
+                let day = date.format("%Y-%m-%d").to_string();
+                // The pass over the area is near that local solar time.
+                let utc_h = (solar_h - obs.lon / 15.0).rem_euclid(24.0);
+                let time = date.and_time(NaiveTime::MIN).and_utc() + Duration::seconds((utc_h * 3600.0) as i64);
+                let snapshot = |bbox: [f64; 4], px: u32, format: &str| {
+                    let [w, s, e, n] = bbox;
+                    let height = ((f64::from(px) * (n - s) / (e - w)).round() as u32).max(1);
+                    format!(
+                        "{SNAPSHOT}?REQUEST=GetSnapshot&TIME={day}&BBOX={s:.5},{w:.5},{n:.5},{e:.5}&CRS=EPSG:4326&LAYERS={layer}&FORMAT={format}&WIDTH={px}&HEIGHT={height}"
+                    )
+                };
+                // Native pixels across, within what a snapshot gives.
+                let native = |bbox: [f64; 4]| (((bbox[2] - bbox[0]) / deg).ceil() as u32).clamp(64, CUT_PX);
+                Scene {
+                    id: format!("{layer}/{day}"),
+                    mission: Mission::Daily,
+                    platform: platform.to_string(),
+                    instrument: Some(camera.to_string()),
+                    time,
+                    cloud: None,
+                    preview: Some(snapshot(region, PREVIEW_PX, "image/jpeg")),
+                    tilejson: None,
+                    tiles: Some(daily_tiles(layer, date)),
+                    snapshot: None,
+                    page: Some(format!(
+                        "https://worldview.earthdata.nasa.gov/?v={w:.4},{s:.4},{e:.4},{n:.4}&l=Coastlines_15m,{layer}&t={day}-T12:00:00Z"
+                    )),
+                    downloads: vec![
+                        Download { label: "Your area (GeoTIFF)".into(), url: snapshot(area, native(area), "image/tiff") },
+                        Download { label: "The region shown (GeoTIFF)".into(), url: snapshot(region, native(region), "image/tiff") },
+                    ],
+                    rings: vec![ring.clone()],
+                    bbox: region,
+                    over_center: true,
+                }
+            })
+        })
+        .collect()
+}
+
+/// The map tiles of a GIBS layer on a day (UTC date), as Cesium takes them.
+pub fn daily_tiles(layer: &str, date: NaiveDate) -> String {
+    format!("{GIBS_TILES}/{layer}/default/{}/GoogleMapsCompatible_Level9/{{z}}/{{y}}/{{x}}.jpg", date.format("%Y-%m-%d"))
+}
+
+/// The area's box grown to a region a daily view is worth looking at.
+fn region_box([w, s, e, n]: [f64; 4]) -> [f64; 4] {
+    let (lat, lon) = ((s + n) / 2.0, (w + e) / 2.0);
+    let half_lat = ((n - s) / 2.0 * 1.3).max(REGION_HALF_DEG);
+    let half_lon = ((e - w) / 2.0 * 1.3).max(REGION_HALF_DEG / lat.to_radians().cos().max(0.1));
+    [lon - half_lon, (lat - half_lat).max(-85.0), lon + half_lon, (lat + half_lat).min(85.0)]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -431,5 +524,21 @@ mod tests {
         assert_eq!(platform_from_id("CBERS_4_AWFI_20261024_159_117_L4"), Some(("CBERS-4".into(), Some("AWFI".into()))));
         assert_eq!(platform_from_id("AMAZONIA_1_WFI_20261020_034_018_L4"), Some(("Amazonia-1".into(), Some("WFI".into()))));
         assert!(same_platform("CBERS-4A", "CBERS-4A") && same_platform("Amazonia-1", "Amazonia 1"));
+    }
+
+    #[test]
+    fn daily_views_are_dated_before_today_near_their_pass() {
+        let obs = Observer::new("Brasília", -15.79, -47.88, 1100.0);
+        let now = DateTime::parse_from_rfc3339("2026-10-29T18:00:00Z").unwrap().with_timezone(&Utc);
+        let views = daily(&obs, now);
+        assert_eq!(views.len(), DAILY.len() * DAILY_DAYS as usize);
+        let terra = &views[0];
+        assert!(terra.id.ends_with("/2026-10-28"));
+        // 10:30 local solar time at 47.88° W is about 13:42 UTC.
+        assert_eq!(terra.time.format("%Y-%m-%d %H:%M").to_string(), "2026-10-28 13:41");
+        assert!(terra.tiles.as_deref().unwrap().contains("/2026-10-28/GoogleMapsCompatible_Level9/{z}/{y}/{x}.jpg"));
+        assert!(terra.preview.as_deref().unwrap().contains("TIME=2026-10-28&BBOX=-16.59000,"));
+        let [w, s, e, n] = terra.bbox;
+        assert!(w < -47.88 && e > -47.88 && s < -15.79 && n > -15.79 && n - s >= 1.6);
     }
 }

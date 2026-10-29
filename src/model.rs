@@ -1,6 +1,6 @@
 //! The application's state, its downloads and the per-frame work.
 
-use crate::archive::{self, Catalogue, Pass};
+use crate::archive::{self, Catalogue, Mission, Pass};
 use crate::share::{self, Shared};
 use crate::sky::{self, Layers};
 use crate::{color, fetch, globe, page, quality};
@@ -107,6 +107,30 @@ impl Base {
             Base::Imagery => "imagery",
             Base::Map => "map",
         }
+    }
+}
+
+/// NASA's view of one day laid over the whole globe.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Sky {
+    /// Days before today (UTC).
+    pub back: i64,
+    /// Which of archive::DAILY.
+    pub layer: usize,
+}
+
+impl Sky {
+    /// Yesterday's, the latest whole one, from NOAA-20 (VIIRS).
+    pub const LATEST: Sky = Sky { back: 1, layer: 3 };
+    /// How far back the days go.
+    pub const MAX_BACK: i64 = 60;
+
+    pub fn date(self) -> chrono::NaiveDate {
+        (Utc::now() - Duration::days(self.back)).date_naive()
+    }
+
+    pub fn tiles(self) -> String {
+        archive::daily_tiles(archive::DAILY[self.layer].2, self.date())
     }
 }
 
@@ -228,6 +252,8 @@ pub struct Model {
     pub picking: RwSignal<bool>,
     pub labels: RwSignal<bool>,
     pub base: RwSignal<Base>,
+    /// NASA's view of a recent day over the globe, when shown.
+    pub sky: RwSignal<Option<Sky>>,
     pub message: RwSignal<Option<(String, f64)>>,
     pub archive: RwSignal<Archive>,
     /// How far back the archive is searched.
@@ -275,6 +301,7 @@ impl Model {
             picking: RwSignal::new(false),
             labels: RwSignal::new(true),
             base: RwSignal::new(Base::Imagery),
+            sky: RwSignal::new(None),
             message: RwSignal::new(None),
             archive: RwSignal::new(Archive::default()),
             archive_days: RwSignal::new(90),
@@ -474,6 +501,7 @@ impl Model {
             };
             let brazil = search_catalogue(Catalogue::BrazilDataCube, &obs, start, end);
             let ((catalogue, result), brazil) = futures::future::join(global, brazil).await;
+            let daily = archive::daily(&obs, end);
             if self.archive.with_untracked(|a| a.key != key) {
                 return;
             }
@@ -493,6 +521,7 @@ impl Model {
                 }
                 None => errors.push(unreachable(Catalogue::BrazilDataCube.host())),
             }
+            scenes.extend(daily);
             self.archive.set(Archive {
                 key,
                 loading: false,
@@ -502,6 +531,15 @@ impl Model {
                 catalogue: Some(catalogue),
             });
         });
+    }
+
+    /// A pass's satellite, and its camera where it has several worth naming.
+    pub fn pass_name(self, pass: &Pass) -> String {
+        let name = self.platform_sat(&pass.platform).map_or_else(|| pass.platform.clone(), |i| i.name.to_string());
+        match pass.instrument.as_ref().filter(|_| pass.mission.names_instrument()) {
+            Some(camera) => format!("{name} {camera}"),
+            None => name,
+        }
     }
 
     /// The satellite of a catalogue's platform, when the fleet has it.
@@ -524,6 +562,7 @@ impl Model {
         spawn_local(async move {
             let layers = futures::future::join_all(pass.scenes.iter().map(|s| async move {
                 let tiles = match s.tilejson.as_deref() {
+                    _ if s.tiles.is_some() => s.tiles.clone(),
                     Some(url) => fetch::text(url)
                         .await
                         .ok()
@@ -535,6 +574,9 @@ impl Model {
                 json!({
                     "tiles": tiles,
                     "image": s.snapshot,
+                    // GIBS draws the daily views down to ~250 m.
+                    "max": if s.mission == Mission::Daily { 9 } else { 14 },
+                    "credit": if s.mission == Mission::Daily { "NASA GIBS" } else { "Microsoft Planetary Computer" },
                     "west": s.bbox[0],
                     "south": s.bbox[1],
                     "east": s.bbox[2],

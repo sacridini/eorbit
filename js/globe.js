@@ -43,6 +43,8 @@ let baseLayer = null;
 let scenes = [];
 let sceneColor = "#ffffff";
 let sceneLayers = [];
+let skyUrl = "";
+let skyLayer = null;
 let sceneEntities = [];
 const scratch = { position: null, date: null };
 
@@ -129,6 +131,7 @@ function boot() {
   }, Cesium.ScreenSpaceEventType.MOUSE_MOVE);
 
   setBase(base);
+  drawSky();
   drawScenes();
 }
 
@@ -175,6 +178,35 @@ export function setBase(name) {
   baseLayer.dayAlpha = 1.0;
 }
 
+/// NASA's view of one day over the whole globe (GIBS tiles, {z}/{y}/{x}),
+/// between the base and the scenes; "" takes it off.
+export function setSky(url) {
+  skyUrl = url;
+  drawSky();
+}
+
+function drawSky() {
+  if (!viewer) return;
+  const Cesium = C();
+  const layers = viewer.imageryLayers;
+  if (skyLayer) layers.remove(skyLayer, true);
+  skyLayer = null;
+  if (!skyUrl) return;
+  skyLayer = layers.addImageryProvider(
+    new Cesium.UrlTemplateImageryProvider({
+      url: skyUrl,
+      maximumLevel: 9,
+      credit: new Cesium.Credit("Daily view: NASA GIBS", false),
+    }),
+  );
+  // Just above the base, which shows through the gaps between swaths.
+  layers.lowerToBottom(skyLayer);
+  layers.raise(skyLayer);
+  skyLayer.colorToAlpha = Cesium.Color.BLACK;
+  skyLayer.colorToAlphaThreshold = 0.03;
+  skyLayer.nightAlpha = 1.0;
+}
+
 /// Acquired scenes draped over the globe: [{tiles (a URL template), west,
 /// south, east, north, rings: [[lon, lat, ...]]}], outlined in `color`.
 export function setScenes(json, color) {
@@ -207,8 +239,8 @@ function drawScenes() {
         new Cesium.UrlTemplateImageryProvider({
           url: scene.tiles,
           rectangle,
-          maximumLevel: 14,
-          credit: new Cesium.Credit("Scene rendered by Microsoft Planetary Computer", false),
+          maximumLevel: scene.max,
+          credit: new Cesium.Credit(`Scene rendered by ${scene.credit}`, false),
         }),
       );
     } else if (scene.image) {
