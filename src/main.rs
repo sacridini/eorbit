@@ -1,12 +1,15 @@
 //! EOrbit: the orbitui planner's library under a Leptos interface, on
 //! a Cesium globe.
 
+mod archive;
 mod color;
 mod fetch;
 mod fmt;
 mod globe;
 mod model;
+mod page;
 mod quality;
+mod share;
 mod sky;
 mod ui;
 
@@ -25,6 +28,30 @@ fn main() {
 fn App() -> impl IntoView {
     let m = Model::new();
     provide_context(m);
+
+    // A link opens what it shares, also when pasted over the page's address.
+    let hash = page::hash();
+    if !hash.is_empty() {
+        m.apply_shared(share::decode(&hash));
+    }
+    let on_hash = Closure::<dyn FnMut(String)>::new(move |h: String| m.apply_shared(share::decode(&h)));
+    page::on_hash_change(on_hash.as_ref().unchecked_ref());
+    on_hash.forget();
+    // The address follows the screen, so that it can be shared as it is.
+    Effect::new(move |_| page::set_hash(&m.shared_state()));
+    Effect::new(move |_| {
+        if m.forecast.with(Option::is_some) {
+            m.open_pending();
+        }
+    });
+    // The acquired images are searched when looked at.
+    Effect::new(move |_| {
+        if m.view.get() == View::Images {
+            m.observer.with(|_| ());
+            m.archive_days.get();
+            untrack(|| m.fetch_archive());
+        }
+    });
 
     // The globe (started by its module) reports clicks to the model.
     Effect::new(move |_| {
@@ -93,6 +120,7 @@ fn App() -> impl IntoView {
         View::Timeline => view! { <ui::chart::Chart/> }.into_any(),
         View::Calendar => view! { <ui::calendar::Calendar/> }.into_any(),
         View::Revisit => view! { <ui::revisit::Revisit/> }.into_any(),
+        View::Images => view! { <ui::images::Images/> }.into_any(),
     };
 
     view! {

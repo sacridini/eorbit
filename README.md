@@ -26,7 +26,7 @@ mission catalogue, clouds and place search.
   simulated clock. Escape or "Reset view" deselects the satellite and returns
   to the area.
 
-Three more views share the screen with the opportunities:
+Four more views share the screen with the opportunities:
 
 - Timeline: zoomable from 6 hours to 14 days, with the Sun's height as a sky
   band, the forecast cloud cover in total and by layer (low, middle, high),
@@ -35,6 +35,14 @@ Three more views share the screen with the opportunities:
   its best opportunity, with the best chance of the forecast on top.
 - Revisit: how often each satellite (and the fleet, and the good images
   alone) images the area, its longest wait and the gaps on a strip.
+- Images: the scenes Sentinel-2, Landsat and Sentinel-1 actually acquired over
+  the area in the last 30 to 180 days, with their previews and cloud cover,
+  the latest clear image and how often one comes. A scene opens on the globe,
+  draped over the map.
+
+The page's address follows the screen (area, polygon included, view,
+satellite, opportunity, forecast span), so "Share" copies a link that opens
+the same thing elsewhere.
 
 Opportunities export to a spreadsheet (CSV) or a calendar (ICS). ESA's
 acquisition plans for Sentinel-1 and Sentinel-2 (KML, loaded or dropped on the
@@ -57,7 +65,8 @@ trunk build --release
   places) and the per-frame loop.
 - `src/bin/worker.rs`, `src/wire.rs`: the forecast's Web Worker and its
   messages.
-- `src/quality.rs`: the score; `src/sky.rs`: the cloud layers.
+- `src/quality.rs`: the score; `src/sky.rs`: the cloud layers;
+  `src/archive.rs`: the acquired scenes; `src/share.rs`: the shared links.
 - `src/ui/`: the panels and views ([Leptos](https://leptos.dev)).
 - `src/globe.rs`: positions, orbits and swaths computed in Rust for the globe.
 - `js/globe.js`: draws them on [CesiumJS](https://cesium.com/platform/cesiumjs/).
@@ -65,6 +74,10 @@ trunk build --release
 ## Data
 
 - Orbital elements: Celestrak GP data (OMM), with orbitui's bundled snapshot.
+- Acquired scenes, their previews and map tiles: the
+  [Microsoft Planetary Computer](https://planetarycomputer.microsoft.com)
+  STAC catalogue (Sentinel-2 L2A, Landsat Collection 2 Level-2, Sentinel-1
+  GRD).
 - Cloud forecast and place names: [Open-Meteo.com](https://open-meteo.com)
   (CC BY 4.0), with [GeoNames](https://www.geonames.org) for places.
 - Base maps: [Sentinel-2 cloudless](https://s2maps.eu) by EOX IT Services GmbH

@@ -39,6 +39,11 @@ let aoi = null;
 let orbitEntities = [];
 let highlightEntities = [];
 let aoiEntities = [];
+let baseLayer = null;
+let scenes = [];
+let sceneColor = "#ffffff";
+let sceneLayers = [];
+let sceneEntities = [];
 const scratch = { position: null, date: null };
 
 // The viewer starts as soon as this module is loaded, while the WebAssembly
@@ -124,6 +129,7 @@ function boot() {
   }, Cesium.ScreenSpaceEventType.MOUSE_MOVE);
 
   setBase(base);
+  drawScenes();
 }
 
 /// The area of interest saved by the application (orbitui's config), or
@@ -156,15 +162,68 @@ export function init(satCallback, groundCallback) {
 }
 
 export function setBase(name) {
-  if (viewer && name === base && viewer.imageryLayers.length > 0) return;
+  if (viewer && name === base && baseLayer) return;
   base = name;
   if (!viewer) return;
   const layers = viewer.imageryLayers;
-  layers.removeAll();
-  const layer = layers.addImageryProvider(BASES[name]());
+  if (baseLayer) layers.remove(baseLayer, true);
+  baseLayer = layers.addImageryProvider(BASES[name]());
+  // Under the acquired scenes, if any.
+  layers.lowerToBottom(baseLayer);
   // The night side keeps some of the map, so that it stays readable.
-  layer.nightAlpha = name === "map" ? 1.0 : 0.55;
-  layer.dayAlpha = 1.0;
+  baseLayer.nightAlpha = name === "map" ? 1.0 : 0.55;
+  baseLayer.dayAlpha = 1.0;
+}
+
+/// Acquired scenes draped over the globe: [{tiles (a URL template), west,
+/// south, east, north, rings: [[lon, lat, ...]]}], outlined in `color`.
+export function setScenes(json, color) {
+  scenes = JSON.parse(json);
+  sceneColor = color || "#ffffff";
+  drawScenes();
+}
+
+function drawScenes() {
+  if (!viewer) return;
+  const Cesium = C();
+  for (const layer of sceneLayers) viewer.imageryLayers.remove(layer, true);
+  sceneLayers = [];
+  clear(sceneEntities);
+  const outline = Cesium.Color.fromCssColorString(sceneColor);
+  for (const scene of scenes) {
+    const layer = viewer.imageryLayers.addImageryProvider(
+      new Cesium.UrlTemplateImageryProvider({
+        url: scene.tiles,
+        rectangle: Cesium.Rectangle.fromDegrees(scene.west, scene.south, scene.east, scene.north),
+        maximumLevel: 14,
+        credit: new Cesium.Credit("Scene rendered by Microsoft Planetary Computer", false),
+      }),
+    );
+    // The scene stays bright on the night side: it was taken in daylight.
+    layer.nightAlpha = 1.0;
+    sceneLayers.push(layer);
+    for (const ring of scene.rings) {
+      if (ring.length < 6) continue;
+      const positions = Cesium.Cartesian3.fromDegreesArray(ring);
+      sceneEntities.push(
+        viewer.entities.add({
+          polyline: { positions: positions.concat([positions[0]]), width: 2, clampToGround: true, material: outline },
+        }),
+      );
+    }
+  }
+}
+
+export function flyToBox(west, south, east, north) {
+  if (!viewer) return;
+  const Cesium = C();
+  // Some room around the scene.
+  const dx = (east - west) * 0.35;
+  const dy = (north - south) * 0.35;
+  viewer.camera.flyTo({
+    destination: Cesium.Rectangle.fromDegrees(west - dx, Math.max(-90, south - dy), east + dx, Math.min(90, north + dy)),
+    duration: 1.8,
+  });
 }
 
 /// [{short, name, color}] in the order of the positions given to update().

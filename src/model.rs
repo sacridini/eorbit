@@ -1,7 +1,9 @@
 //! The application's state, its downloads and the per-frame work.
 
+use crate::archive::{self, Mission, Pass};
+use crate::share::{self, Shared};
 use crate::sky::{self, Layers};
-use crate::{fetch, globe, quality};
+use crate::{color, fetch, globe, page, quality};
 use chrono::{DateTime, Duration, Utc};
 use leptos::prelude::*;
 use leptos::task::spawn_local;
@@ -16,12 +18,14 @@ use orbitui::plan::{self, Plans, Status};
 use orbitui::predict::{self, Acquisition, Forecast};
 use orbitui::tle::{self, Source};
 use orbitui::{astro, config, export, platform};
+use serde_json::{Value, json};
 use sgp4::Elements;
 use std::cell::RefCell;
 use std::collections::HashSet;
 use std::sync::Arc;
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::{JsCast, JsValue};
+use wasm_bindgen_futures::JsFuture;
 use web_sys::{MessageEvent, Worker};
 
 /// How often the interface follows the simulated time (the globe follows
@@ -31,6 +35,8 @@ const TICK_MS: f64 = 125.0;
 const FORECAST_BUDGET: web_time::Duration = web_time::Duration::from_millis(12);
 /// The view of the globe that shows the whole area's hemisphere.
 const HOME_HEIGHT_M: f64 = 16_000_000.0;
+/// A shared opportunity is found in the forecast within this many seconds.
+const SHARED_SLACK_S: i64 = 120;
 
 /// Simulated time: real time, shifted, sped up or frozen.
 #[derive(Clone, Copy, Debug)]
@@ -111,6 +117,48 @@ pub enum View {
     Timeline,
     Calendar,
     Revisit,
+    Images,
+}
+
+impl View {
+    pub const ALL: [View; 5] = [View::Globe, View::Timeline, View::Calendar, View::Revisit, View::Images];
+
+    /// Its name in links.
+    pub fn id(self) -> &'static str {
+        match self {
+            View::Globe => "globe",
+            View::Timeline => "timeline",
+            View::Calendar => "calendar",
+            View::Revisit => "revisit",
+            View::Images => "images",
+        }
+    }
+
+    pub fn from_id(id: &str) -> Option<View> {
+        View::ALL.into_iter().find(|v| v.id() == id)
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            View::Globe => "Globe",
+            View::Timeline => "Timeline",
+            View::Calendar => "Calendar",
+            View::Revisit => "Revisit",
+            View::Images => "Images",
+        }
+    }
+}
+
+/// The scenes already acquired over the area.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Archive {
+    /// The area and span searched.
+    key: String,
+    pub loading: bool,
+    pub passes: Vec<Pass>,
+    /// Missions whose search failed, and why.
+    pub errors: Vec<String>,
+    pub since: Option<DateTime<Utc>>,
 }
 
 /// How the list of opportunities is ordered.
@@ -179,6 +227,13 @@ pub struct Model {
     pub labels: RwSignal<bool>,
     pub base: RwSignal<Base>,
     pub message: RwSignal<Option<(String, f64)>>,
+    pub archive: RwSignal<Archive>,
+    /// How far back the archive is searched.
+    pub archive_days: RwSignal<u32>,
+    /// The acquired scene shown on the globe.
+    pub scene: RwSignal<Option<Pass>>,
+    /// A shared opportunity, opened when the forecast holds it.
+    pending: StoredValue<Option<(u64, DateTime<Utc>)>>,
     drawn: StoredValue<Option<Drawn>>,
     last_tick: StoredValue<f64>,
 }
@@ -208,7 +263,7 @@ impl Model {
             now: RwSignal::new(clock.now()),
             clock: RwSignal::new(clock),
             event: RwSignal::new(None),
-            days: RwSignal::new(7.0),
+            days: RwSignal::new(share::DEFAULT_DAYS),
             min_el: 10.0,
             show_unusable: RwSignal::new(false),
             only_selected: RwSignal::new(false),
@@ -219,6 +274,10 @@ impl Model {
             labels: RwSignal::new(true),
             base: RwSignal::new(Base::Imagery),
             message: RwSignal::new(None),
+            archive: RwSignal::new(Archive::default()),
+            archive_days: RwSignal::new(90),
+            scene: RwSignal::new(None),
+            pending: StoredValue::new(None),
             drawn: StoredValue::new(None),
             last_tick: StoredValue::new(0.0),
         };
@@ -271,6 +330,7 @@ impl Model {
     pub fn reset_view(self) {
         self.selected.set(None);
         self.event.set(None);
+        self.hide_scene();
         self.picking.set(false);
         let obs = self.observer.get_untracked();
         globe::fly_to(obs.lat, obs.lon, HOME_HEIGHT_M, 1.5);
@@ -281,6 +341,7 @@ impl Model {
         globe::fly_to(obs.lat, obs.lon, 12_000_000.0, 2.0);
         self.observer.set(obs);
         self.event.set(None);
+        self.hide_scene();
         self.fetch_clouds();
         self.request_forecast();
     }
@@ -302,6 +363,170 @@ impl Model {
                 self.set_observer(Observer::new(name.unwrap_or_else(|| fallback_name.to_string()), lat, lon, 0.0));
             }
             Err(e) => self.say(e),
+        }
+    }
+
+    // ---- Shared links ----
+
+    /// Opens what a link asks for.
+    pub fn apply_shared(self, shared: Shared) {
+        if let Some(view) = shared.view {
+            self.view.set(view);
+        }
+        if let Some(days) = shared.days {
+            self.days.set(days);
+        }
+        if let Some(norad) = shared.sat {
+            self.selected.set(Some(norad));
+        }
+        if let (Some(norad), Some(t)) = (shared.sat, shared.at) {
+            let now = Utc::now();
+            if t < now - Duration::seconds(SHARED_SLACK_S) {
+                self.say("The shared opportunity has passed; its satellite stays selected");
+            } else {
+                // A forecast long enough to hold it.
+                let need = (t - now).num_seconds() as f64 / 86_400.0 + 0.5;
+                if need > self.days.get_untracked() {
+                    let days = crate::ui::timeline::DAYS.into_iter().find(|&d| d >= need).unwrap_or(30.0);
+                    self.days.set(days);
+                }
+                self.pending.set_value(Some((norad, t)));
+            }
+        }
+        match shared.observer {
+            Some(obs) => self.set_observer(obs),
+            None => self.request_forecast(),
+        }
+    }
+
+    /// The shared opportunity, once the forecast holds it.
+    pub fn open_pending(self) {
+        let Some((norad, t)) = self.pending.get_value() else { return };
+        self.pending.set_value(None);
+        let sats = self.sats.get_untracked();
+        let found = self.forecast.with_untracked(|f| {
+            f.as_ref()?
+                .acquisitions
+                .iter()
+                .find(|a| {
+                    sats.get(a.sat).is_some_and(|s| s.info.norad == norad) && (a.time - t).num_seconds().abs() <= SHARED_SLACK_S
+                })
+                .cloned()
+        });
+        match found {
+            Some(a) => self.open_event(a),
+            None => self.say("The shared opportunity is not in the forecast any more"),
+        }
+    }
+
+    /// The state to put in the page's address (tracked).
+    pub fn shared_state(self) -> String {
+        let at = self.event.with(|e| e.as_ref().map(|a| a.time));
+        self.observer.with(|obs| share::encode(obs, self.view.get(), self.selected.get(), at, self.days.get()))
+    }
+
+    /// Copies a link to what is on the screen.
+    pub fn share(self) {
+        page::set_hash(&untrack(|| self.shared_state()));
+        let link = page::link();
+        let what = if self.event.with_untracked(Option::is_some) {
+            "this opportunity"
+        } else if self.selected.with_untracked(Option::is_some) {
+            "this area and satellite"
+        } else {
+            "this area"
+        };
+        spawn_local(async move {
+            let copied = JsFuture::from(page::copy(&link)).await.ok().and_then(|v| v.as_bool()).unwrap_or(false);
+            if copied {
+                self.say(format!("Link copied: it opens {what}"));
+            } else {
+                self.say("Copy the address in the browser's bar to share this view");
+            }
+        });
+    }
+
+    // ---- Acquired images ----
+
+    /// Searches the scenes acquired over the area, unless they are known.
+    pub fn fetch_archive(self) {
+        let obs = self.observer.get_untracked();
+        let days = self.archive_days.get_untracked();
+        let key = format!("{:.5},{:.5},{:.1},{days}", obs.lat, obs.lon, obs.area.as_ref().map_or(0.0, |a| a.area_km2));
+        if self.archive.with_untracked(|a| a.key == key && (a.loading || a.errors.is_empty())) {
+            return;
+        }
+        let end = Utc::now();
+        let start = end - Duration::days(days.into());
+        self.archive.set(Archive { key: key.clone(), loading: true, since: Some(start), ..Archive::default() });
+        spawn_local(async move {
+            let searches = Mission::ALL.map(|mission| {
+                let body = archive::body(mission, &obs, start, end);
+                async move { (mission, fetch::post_json(archive::SEARCH, &body).await) }
+            });
+            let answers = futures::future::join_all(searches).await;
+            let mut scenes = Vec::new();
+            let mut errors = Vec::new();
+            for (mission, answer) in answers {
+                match answer.and_then(|text| archive::parse(&text, mission, &obs)) {
+                    Ok(found) => scenes.extend(found),
+                    Err(e) => errors.push(format!("{}: {e}", mission.label())),
+                }
+            }
+            if self.archive.with_untracked(|a| a.key != key) {
+                return;
+            }
+            self.archive.set(Archive { key, loading: false, passes: archive::passes(scenes), errors, since: Some(start) });
+        });
+    }
+
+    /// The satellite of a catalogue's platform, when the fleet has it.
+    pub fn platform_sat(self, platform: &str) -> Option<SatInfo> {
+        self.sats.with_untracked(|s| s.iter().find(|s| archive::same_platform(platform, s.info.name)).map(|s| s.info))
+    }
+
+    pub fn platform_color(self, platform: &str) -> String {
+        self.platform_sat(platform).map_or_else(|| "#e9f0f8".to_string(), |info| color::css(info.color))
+    }
+
+    /// Drapes an acquired scene over the globe and flies to it.
+    pub fn show_scene(self, pass: Pass) {
+        self.view.set(View::Globe);
+        let [west, south, east, north] = pass.bbox();
+        globe::fly_to_box(west, south, east, north);
+        let color = self.platform_color(&pass.platform);
+        let key = pass.key();
+        self.scene.set(Some(pass.clone()));
+        spawn_local(async move {
+            let tiles = futures::future::join_all(pass.scenes.iter().map(|s| async move {
+                let text = fetch::text(s.tilejson.as_deref()?).await.ok()?;
+                let v: Value = serde_json::from_str(&text).ok()?;
+                let rings: Vec<Vec<f64>> = s.rings.iter().map(|r| r.iter().flat_map(|&(lat, lon)| [lon, lat]).collect()).collect();
+                Some(json!({
+                    "tiles": v["tiles"][0].as_str()?,
+                    "west": s.bbox[0],
+                    "south": s.bbox[1],
+                    "east": s.bbox[2],
+                    "north": s.bbox[3],
+                    "rings": rings,
+                }))
+            }))
+            .await;
+            if self.scene.with_untracked(|p| p.as_ref().map(Pass::key)) != Some(key) {
+                return;
+            }
+            let layers: Vec<Value> = tiles.into_iter().flatten().collect();
+            if layers.is_empty() {
+                self.say("The catalogue did not give this image's map tiles");
+            }
+            globe::set_scenes(&Value::Array(layers).to_string(), &color);
+        });
+    }
+
+    pub fn hide_scene(self) {
+        if self.scene.with_untracked(Option::is_some) {
+            self.scene.set(None);
+            globe::set_scenes("[]", "");
         }
     }
 

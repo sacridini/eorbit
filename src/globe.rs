@@ -30,6 +30,12 @@ extern "C" {
     pub fn set_labels(on: bool);
     #[wasm_bindgen(js_name = setPicking)]
     pub fn set_picking(on: bool);
+    /// Acquired scenes draped over the globe: JSON [{tiles, west, south,
+    /// east, north, rings}], with their outline colour.
+    #[wasm_bindgen(js_name = setScenes)]
+    pub fn set_scenes(json: &str, color: &str);
+    #[wasm_bindgen(js_name = flyToBox)]
+    pub fn fly_to_box(west: f64, south: f64, east: f64, north: f64);
     #[wasm_bindgen(js_name = setActive)]
     pub fn set_active(on: bool);
 }

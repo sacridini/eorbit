@@ -11,7 +11,7 @@ use leptos::prelude::*;
 use wasm_bindgen::JsCast;
 
 const WARPS: [f64; 6] = [1.0, 10.0, 60.0, 600.0, 3600.0, 21600.0];
-const DAYS: [f64; 4] = [3.0, 7.0, 14.0, 30.0];
+pub const DAYS: [f64; 4] = [3.0, 7.0, 14.0, 30.0];
 
 fn pct(t: DateTime<Utc>, (a, b): (DateTime<Utc>, DateTime<Utc>)) -> f64 {
     (t - a).num_seconds() as f64 / (b - a).num_seconds().max(1) as f64 * 100.0

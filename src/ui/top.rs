@@ -113,16 +113,16 @@ pub fn TopBar() -> impl IntoView {
         <header class="top panel">
             <div class="wordmark">"EOrbit"</div>
             <nav class="tabs" aria-label="Views">
-                {[(View::Globe, "Globe"), (View::Timeline, "Timeline"), (View::Calendar, "Calendar"), (View::Revisit, "Revisit")]
+                {View::ALL
                     .into_iter()
-                    .map(|(v, label)| {
+                    .map(|v| {
                         view! {
                             <button
                                 class:on=move || m.view.get() == v
                                 aria-current=move || (m.view.get() == v).then_some("page")
                                 on:click=move |_| m.view.set(v)
                             >
-                                {label}
+                                {v.label()}
                             </button>
                         }
                     })
@@ -246,6 +246,13 @@ pub fn TopBar() -> impl IntoView {
                         "Map"
                     </button>
                 </div>
+                <button class="tool" title="Copy a link to this area, view and opportunity" on:click=move |_| m.share()>
+                    <svg viewBox="0 0 24 24" aria-hidden="true">
+                        <path d="M10 14a4.5 4.5 0 0 0 6.4 0l3-3a4.5 4.5 0 0 0-6.4-6.4l-1 1"/>
+                        <path d="M14 10a4.5 4.5 0 0 0-6.4 0l-3 3a4.5 4.5 0 0 0 6.4 6.4l1-1"/>
+                    </svg>
+                    <span>"Share"</span>
+                </button>
                 <button class="tool" class:on=m.labels title="Satellite names on the globe" on:click=move |_| m.labels.update(|l| *l = !*l)>
                     "Names"
                 </button>
@@ -278,7 +285,33 @@ pub fn GlobeTools() -> impl IntoView {
                 </svg>
                 <span>"Reset view"</span>
             </button>
+            <SceneChip/>
         </div>
+    }
+}
+
+/// The acquired image draped over the globe, and how to take it off.
+#[component]
+fn SceneChip() -> impl IntoView {
+    let m = expect_context::<Model>();
+    move || {
+        let pass = m.scene.get()?;
+        let utc = m.utc.get();
+        let name = m.platform_sat(&pass.platform).map_or_else(|| pass.platform.clone(), |i| i.name.to_string());
+        let mut text = format!("{name} image of {}, {}", fmt::day(pass.time, utc), fmt::hm(pass.time, utc));
+        if let Some(c) = pass.cloud().filter(|_| pass.mission.optical()) {
+            text.push_str(&format!(", {c:.0}% cloud"));
+        }
+        let color = m.platform_color(&pass.platform);
+        Some(view! {
+            <div class="scene-chip floating" style=format!("--sat: {color}")>
+                <span class="swatch"></span>
+                <span>{text}</span>
+                <button class="close" title="Take the image off the globe" aria-label="Take the image off the globe" on:click=move |_| m.hide_scene()>
+                    "×"
+                </button>
+            </div>
+        })
     }
 }
 

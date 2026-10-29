@@ -7,6 +7,7 @@ pub mod detail;
 pub mod files;
 pub mod fleet;
 pub mod footprint;
+pub mod images;
 pub mod revisit;
 pub mod scale;
 pub mod timeline;

@@ -65,9 +65,17 @@ fn Card(a: Acquisition) -> impl IntoView {
                     <h2>{info.name}</h2>
                     <p class="muted">{format!("{} · {}", info.sensor, info.access())}</p>
                 </div>
-                <button class="close" title="Close" aria-label="Close" on:click=move |_| m.event.set(None)>
-                    "×"
-                </button>
+                <div class="head-buttons">
+                    <button class="close" title="Copy a link to this opportunity" aria-label="Copy a link to this opportunity" on:click=move |_| m.share()>
+                        <svg viewBox="0 0 24 24" aria-hidden="true">
+                            <path d="M10 14a4.5 4.5 0 0 0 6.4 0l3-3a4.5 4.5 0 0 0-6.4-6.4l-1 1"/>
+                            <path d="M14 10a4.5 4.5 0 0 0-6.4 0l-3 3a4.5 4.5 0 0 0 6.4 6.4l1-1"/>
+                        </svg>
+                    </button>
+                    <button class="close" title="Close" aria-label="Close" on:click=move |_| m.event.set(None)>
+                        "×"
+                    </button>
+                </div>
             </div>
             <div class="detail-time">
                 <span class="big">{move || fmt::hm(time, utc.get())}</span>
