@@ -11,7 +11,7 @@ use leptos::prelude::*;
 use wasm_bindgen::JsCast;
 
 const WARPS: [f64; 6] = [1.0, 10.0, 60.0, 600.0, 3600.0, 21600.0];
-const DAYS: [f64; 3] = [3.0, 7.0, 14.0];
+const DAYS: [f64; 4] = [3.0, 7.0, 14.0, 30.0];
 
 fn pct(t: DateTime<Utc>, (a, b): (DateTime<Utc>, DateTime<Utc>)) -> f64 {
     (t - a).num_seconds() as f64 / (b - a).num_seconds().max(1) as f64 * 100.0
@@ -271,26 +271,36 @@ fn Transport() -> impl IntoView {
             </div>
             <div class="horizon">
                 <span class="muted">"Forecast"</span>
-                <div class="segmented" role="group" aria-label="Forecast length">
-                    {DAYS
-                        .into_iter()
-                        .map(|d| {
-                            view! {
-                                <button
-                                    class:on=move || m.days.get() == d
-                                    on:click=move |_| {
-                                        m.days.set(d);
-                                        m.request_forecast();
-                                    }
-                                >
-                                    {format!("{d:.0} d")}
-                                </button>
-                            }
-                        })
-                        .collect_view()}
-                </div>
+                <DaysPicker/>
             </div>
         </div>
     }
 }
 
+
+/// The length of the forecast.
+#[component]
+pub fn DaysPicker() -> impl IntoView {
+    let m = expect_context::<Model>();
+    view! {
+        <div class="segmented" role="group" aria-label="Forecast length">
+            {DAYS
+                .into_iter()
+                .map(|d| {
+                    view! {
+                        <button
+                            class:on=move || m.days.get() == d
+                            title=format!("Forecast the next {d:.0} days")
+                            on:click=move |_| {
+                                m.days.set(d);
+                                m.request_forecast();
+                            }
+                        >
+                            {format!("{d:.0} d")}
+                        </button>
+                    }
+                })
+                .collect_view()}
+        </div>
+    }
+}

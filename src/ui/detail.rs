@@ -3,9 +3,13 @@
 
 use crate::color;
 use crate::fmt;
+use super::footprint::Footprint;
+use super::scale;
 use crate::model::{self, Model};
+use crate::quality;
 use chrono::Duration;
 use leptos::prelude::*;
+use orbitui::plan::Status;
 use orbitui::predict::{self, Acquisition};
 
 #[component]
@@ -27,6 +31,16 @@ fn Card(a: Acquisition) -> impl IntoView {
     let light = model::sun_elevation(&obs, a.time);
     let side = if a.cross_km >= 0.0 { "right" } else { "left" };
     let time = a.time;
+    let factors = quality::factors(&a, info.kind, cloud);
+    let score = factors.score();
+    let plan = untrack(|| m.plan_status(&a));
+    let why = format!(
+        "Clear sky {}, sunlight {:.0}%, viewing angle {:.0}%, area imaged {:.0}%",
+        factors.clear.map_or_else(|| "unknown".to_string(), |c| format!("{:.0}%", c * 100.0)),
+        factors.sun * 100.0,
+        factors.look * 100.0,
+        factors.cover * 100.0
+    );
 
     let facts = [
         ("Off-nadir", format!("{:.1}°", a.off_nadir)),
@@ -35,6 +49,13 @@ fn Card(a: Acquisition) -> impl IntoView {
         ("Cloud cover", cloud.map_or_else(|| "no forecast".into(), |c| format!("{c:.0}%"))),
         ("Sun height", format!("{light:.0}°").replace('-', "−")),
         ("Pass", if a.ascending { "ascending".to_string() } else { "descending".to_string() }),
+        (
+            "ESA plan",
+            match &plan {
+                Status::Unknown => "no plan loaded".to_string(),
+                other => other.label(),
+            },
+        ),
     ];
 
     view! {
@@ -55,14 +76,19 @@ fn Card(a: Acquisition) -> impl IntoView {
                     <br/>
                     <span class="muted">{move || fmt::relative(m.now.get(), time)}</span>
                 </span>
+                <span class="score-badge" style=format!("--score: {}", scale::score(score)) title=why>
+                    <strong>{format!("{score:.0}")}</strong>
+                    <span>"score"</span>
+                </span>
             </div>
-            <div class="detail-body">
-                <dl class="facts-grid">
-                    {facts
-                        .into_iter()
-                        .map(|(k, v)| view! { <div><dt>{k}</dt><dd>{v}</dd></div> })
-                        .collect_view()}
-                </dl>
+            <dl class="facts-grid">
+                {facts
+                    .into_iter()
+                    .map(|(k, v)| view! { <div><dt>{k}</dt><dd>{v}</dd></div> })
+                    .collect_view()}
+            </dl>
+            <div class="detail-figures">
+                <Footprint a=a.clone()/>
                 <SkyPlot a=a/>
             </div>
         </section>

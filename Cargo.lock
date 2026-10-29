@@ -1695,6 +1695,7 @@ dependencies = [
  "leptos",
  "orbitui",
  "ratatui",
+ "serde",
  "serde_json",
  "sgp4",
  "wasm-bindgen",
@@ -1706,7 +1707,7 @@ dependencies = [
 [[package]]
 name = "orbitui"
 version = "0.3.0"
-source = "git+https://github.com/sacridini/orbitui#b577f2d2e3e3b26a12740299b0161cc1aa1208dd"
+source = "git+https://github.com/sacridini/orbitui#2d322af1fb987cb1545413d9396863f10e6a27ff"
 dependencies = [
  "anyhow",
  "chrono",

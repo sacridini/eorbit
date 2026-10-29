@@ -6,13 +6,15 @@ mod fetch;
 mod fmt;
 mod globe;
 mod model;
+mod quality;
+mod sky;
 mod ui;
 
 use leptos::prelude::*;
-use model::Model;
+use model::{Model, View};
 use orbitui::orbit::{Observer, format_coords};
-use wasm_bindgen::closure::Closure;
 use wasm_bindgen::JsCast;
+use wasm_bindgen::closure::Closure;
 
 fn main() {
     console_error_panic_hook::set_once();
@@ -24,7 +26,7 @@ fn App() -> impl IntoView {
     let m = Model::new();
     provide_context(m);
 
-    // The globe, once its container is in the page.
+    // The globe (started by its module) reports clicks to the model.
     Effect::new(move |_| {
         let on_sat = Closure::<dyn FnMut(u32)>::new(move |i: u32| {
             if let Some(norad) = m.sats.with_untracked(|s| s.get(i as usize).map(|s| s.info.norad)) {
@@ -37,11 +39,10 @@ fn App() -> impl IntoView {
                 m.set_observer(Observer::new(format_coords(lat, lon), lat, lon, 0.0));
             }
         });
-        globe::init("globe", "credits", on_sat.as_ref().unchecked_ref(), on_ground.as_ref().unchecked_ref());
+        globe::init(on_sat.as_ref().unchecked_ref(), on_ground.as_ref().unchecked_ref());
         on_sat.forget();
         on_ground.forget();
-        let obs = m.observer.get_untracked();
-        globe::fly_to(obs.lat, obs.lon, 16_000_000.0, 0.0);
+        m.home();
         m.run();
     });
 
@@ -60,21 +61,47 @@ fn App() -> impl IntoView {
         let event = m.event.get();
         m.sats.with(|s| globe::highlight(event.as_ref().and_then(|a| s.get(a.sat)), event.map_or_else(Default::default, |a| a.time)));
     });
+    // The globe rests while another view covers it.
+    Effect::new(move |_| {
+        let on = m.view.get() == View::Globe;
+        globe::set_active(on);
+        if on {
+            m.redraw_orbit();
+        }
+    });
 
     ui::files::accept_drops(m);
+    window_event_listener(leptos::ev::keydown, move |e| {
+        let typing = e
+            .target()
+            .and_then(|t| t.dyn_into::<web_sys::Element>().ok())
+            .is_some_and(|el| matches!(el.tag_name().as_str(), "INPUT" | "TEXTAREA" | "SELECT"));
+        if e.key() == "Escape" && !typing {
+            m.reset_view();
+        }
+    });
+
+    let main = move || match m.view.get() {
+        View::Globe => view! {
+            <ui::fleet::Fleet/>
+            <ui::top::GlobeTools/>
+            <ui::timeline::Timeline/>
+        }
+        .into_any(),
+        View::Timeline => view! { <ui::chart::Chart/> }.into_any(),
+        View::Calendar => view! { <ui::calendar::Calendar/> }.into_any(),
+        View::Revisit => view! { <ui::revisit::Revisit/> }.into_any(),
+    };
 
     view! {
-        <div id="globe"></div>
-        <div class="shell">
+        <div class="shell" class:flat=move || m.view.get() != View::Globe>
             <ui::top::TopBar/>
-            <ui::fleet::Fleet/>
+            {main}
             <div class="right">
                 <ui::detail::Detail/>
                 <ui::agenda::Agenda/>
             </div>
-            <ui::timeline::Timeline/>
         </div>
         <ui::top::Message/>
-        <div id="credits"></div>
     }
 }

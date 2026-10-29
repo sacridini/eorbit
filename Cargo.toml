@@ -8,6 +8,17 @@ license = "MIT"
 repository = "https://github.com/sacridini/orbitglobe"
 homepage = "https://sacridini.github.io/orbitglobe/"
 
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "orbitglobe"
+path = "src/main.rs"
+
+[[bin]]
+name = "worker"
+path = "src/bin/worker.rs"
+
 [dependencies]
 chrono = { version = "0.4", features = ["wasmbind"] }
 console_error_panic_hook = "0.1"
@@ -17,6 +28,7 @@ leptos = { version = "0.8", features = ["csr"] }
 # Orbits, predictions, mission catalogue, clouds and place search.
 orbitui = { git = "https://github.com/sacridini/orbitui" }
 ratatui = { version = "0.30", default-features = false }
+serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sgp4 = "2"
 wasm-bindgen = "0.2"
@@ -24,15 +36,18 @@ wasm-bindgen-futures = "0.4"
 web-time = "1"
 web-sys = { version = "0.3", features = [
     "DataTransfer",
+    "DedicatedWorkerGlobalScope",
     "DomRect",
     "DragEvent",
     "Element",
     "File",
     "FileList",
     "HtmlInputElement",
+    "MessageEvent",
     "PointerEvent",
     "Response",
     "Window",
+    "Worker",
 ] }
 
 # Propagation runs ~10^6 times per forecast: keep debug builds usable.

@@ -71,3 +71,15 @@ pub fn age(t: DateTime<Utc>) -> String {
         other => other.to_string(),
     }
 }
+
+/// A duration: "3 d 4 h", "5 h 12 min", "40 min".
+pub fn span(d: chrono::Duration) -> String {
+    let m = d.num_minutes().max(0);
+    if m >= 1440 {
+        format!("{} d {} h", m / 1440, m % 1440 / 60)
+    } else if m >= 60 {
+        format!("{} h {} min", m / 60, m % 60)
+    } else {
+        format!("{m} min")
+    }
+}

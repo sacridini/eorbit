@@ -1,7 +1,7 @@
 //! The bar at the top: the area of interest, the map and the data status.
 
 use crate::fmt;
-use crate::model::{Base, Model};
+use crate::model::{Base, Model, View};
 use leptos::html;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
@@ -51,6 +51,22 @@ pub fn TopBar() -> impl IntoView {
     view! {
         <header class="top panel">
             <div class="wordmark">"orbitglobe"</div>
+            <nav class="tabs" aria-label="Views">
+                {[(View::Globe, "Globe"), (View::Timeline, "Timeline"), (View::Calendar, "Calendar"), (View::Revisit, "Revisit")]
+                    .into_iter()
+                    .map(|(v, label)| {
+                        view! {
+                            <button
+                                class:on=move || m.view.get() == v
+                                aria-current=move || (m.view.get() == v).then_some("page")
+                                on:click=move |_| m.view.set(v)
+                            >
+                                {label}
+                            </button>
+                        }
+                    })
+                    .collect_view()}
+            </nav>
             <div class="aoi">
                 <div class="aoi-now">
                     <span class="aoi-name">{move || m.observer.with(|o| o.name.clone())}</span>
@@ -153,6 +169,27 @@ fn choose(m: Model, p: &Place, query: RwSignal<String>, places: RwSignal<Vec<Pla
     m.set_observer(Observer::new(p.label(), p.lat, p.lon, p.elevation));
     places.set(Vec::new());
     query.set(String::new());
+}
+
+/// Buttons floating over the globe.
+#[component]
+pub fn GlobeTools() -> impl IntoView {
+    let m = expect_context::<Model>();
+    view! {
+        <div class="stage">
+            <button
+                class="tool floating"
+                title="Back to the whole area, with no satellite selected (Esc)"
+                on:click=move |_| m.reset_view()
+            >
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M4 12a8 8 0 1 0 2.4-5.7"/>
+                    <path d="M4 4v4.5h4.5"/>
+                </svg>
+                <span>"Reset view"</span>
+            </button>
+        </div>
+    }
 }
 
 /// Where the elements come from, and the forecast's progress.

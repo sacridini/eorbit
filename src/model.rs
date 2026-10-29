@@ -1,27 +1,36 @@
 //! The application's state, its downloads and the per-frame work.
 
-use crate::{fetch, globe};
+use crate::sky::{self, Layers};
+use crate::{fetch, globe, quality};
 use chrono::{DateTime, Duration, Utc};
 use leptos::prelude::*;
 use leptos::task::spawn_local;
+use orbitglobe::wire::{Reply, Request};
 use orbitui::aoi::{self, Shape};
 use orbitui::app::build_sats;
 use orbitui::catalog::{self, SatInfo};
-use orbitui::clouds::{self, Clouds};
+use orbitui::clouds::Clouds;
 use orbitui::geocode::{self, Place};
 use orbitui::orbit::{Observer, Sat};
+use orbitui::plan::{self, Plans, Status};
 use orbitui::predict::{self, Acquisition, Forecast};
 use orbitui::tle::{self, Source};
-use orbitui::{astro, config};
+use orbitui::{astro, config, export, platform};
 use sgp4::Elements;
+use std::cell::RefCell;
 use std::collections::HashSet;
 use std::sync::Arc;
+use wasm_bindgen::closure::Closure;
+use wasm_bindgen::{JsCast, JsValue};
+use web_sys::{MessageEvent, Worker};
 
 /// How often the interface follows the simulated time (the globe follows
 /// it every frame).
 const TICK_MS: f64 = 125.0;
-/// Time spent on the forecast per frame.
+/// Time spent on the forecast per frame, when it cannot run in a worker.
 const FORECAST_BUDGET: web_time::Duration = web_time::Duration::from_millis(12);
+/// The view of the globe that shows the whole area's hemisphere.
+const HOME_HEIGHT_M: f64 = 16_000_000.0;
 
 /// Simulated time: real time, shifted, sped up or frozen.
 #[derive(Clone, Copy, Debug)]
@@ -95,11 +104,42 @@ impl Base {
     }
 }
 
+/// What fills the page beside the list of opportunities.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum View {
+    Globe,
+    Timeline,
+    Calendar,
+    Revisit,
+}
+
+/// How the list of opportunities is ordered.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Order {
+    Soonest,
+    Best,
+}
+
 /// An orbit drawn on the globe: whose, and around which time.
 #[derive(Clone, Copy, PartialEq)]
 struct Drawn {
     norad: u64,
     at: DateTime<Utc>,
+}
+
+/// The forecast worker, when the browser runs one.
+#[derive(Default)]
+struct Pool {
+    worker: Option<Worker>,
+    ready: bool,
+    busy: bool,
+    queued: Option<String>,
+    /// The worker failed: forecasts run on the page.
+    broken: bool,
+}
+
+thread_local! {
+    static POOL: RefCell<Pool> = RefCell::new(Pool::default());
 }
 
 #[derive(Clone, Copy)]
@@ -112,9 +152,14 @@ pub struct Model {
     pub forecast: RwSignal<Option<Arc<Forecast>>>,
     /// The span of the forecast (computed or in progress).
     pub window: RwSignal<Option<(DateTime<Utc>, DateTime<Utc>)>>,
+    /// Share of the forecast computed, while it is.
     pub progress: RwSignal<Option<f64>>,
+    job_id: StoredValue<u64>,
+    /// The forecast advancing between frames, without a worker.
     job: StoredValue<Option<predict::Job>>,
     pub clouds: RwSignal<Option<Clouds>>,
+    pub layers: RwSignal<Option<Layers>>,
+    pub plans: RwSignal<Plans>,
     pub clock: RwSignal<Clock>,
     /// The simulated time, refreshed a few times a second.
     pub now: RwSignal<DateTime<Utc>>,
@@ -127,6 +172,8 @@ pub struct Model {
     /// List opportunities the sensor cannot use (optical sensors at night).
     pub show_unusable: RwSignal<bool>,
     pub only_selected: RwSignal<bool>,
+    pub order: RwSignal<Order>,
+    pub view: RwSignal<View>,
     pub utc: RwSignal<bool>,
     pub picking: RwSignal<bool>,
     pub labels: RwSignal<bool>,
@@ -153,8 +200,11 @@ impl Model {
             forecast: RwSignal::new(None),
             window: RwSignal::new(None),
             progress: RwSignal::new(None),
+            job_id: StoredValue::new(0),
             job: StoredValue::new(None),
             clouds: RwSignal::new(None),
+            layers: RwSignal::new(None),
+            plans: RwSignal::new(Plans::default()),
             now: RwSignal::new(clock.now()),
             clock: RwSignal::new(clock),
             event: RwSignal::new(None),
@@ -162,6 +212,8 @@ impl Model {
             min_el: 10.0,
             show_unusable: RwSignal::new(false),
             only_selected: RwSignal::new(false),
+            order: RwSignal::new(Order::Soonest),
+            view: RwSignal::new(View::Globe),
             utc: RwSignal::new(false),
             picking: RwSignal::new(false),
             labels: RwSignal::new(true),
@@ -208,9 +260,20 @@ impl Model {
         }
         self.set_time(a.time - Duration::seconds(90));
         self.clock.update(|c| c.set_warp(10.0));
-        let obs = self.observer.get_untracked();
-        globe::fly_to(obs.lat, obs.lon, 3_500_000.0, 2.0);
+        if self.view.get_untracked() == View::Globe {
+            let obs = self.observer.get_untracked();
+            globe::fly_to(obs.lat, obs.lon, 3_500_000.0, 2.0);
+        }
         self.event.set(Some(a));
+    }
+
+    /// Back to the whole area of interest: no satellite, no opportunity.
+    pub fn reset_view(self) {
+        self.selected.set(None);
+        self.event.set(None);
+        self.picking.set(false);
+        let obs = self.observer.get_untracked();
+        globe::fly_to(obs.lat, obs.lon, HOME_HEIGHT_M, 1.5);
     }
 
     pub fn set_observer(self, obs: Observer) {
@@ -220,6 +283,11 @@ impl Model {
         self.event.set(None);
         self.fetch_clouds();
         self.request_forecast();
+    }
+
+    pub fn home(self) {
+        let obs = self.observer.get_untracked();
+        globe::fly_to(obs.lat, obs.lon, HOME_HEIGHT_M, 0.0);
     }
 
     /// Sets the AOI from a GeoJSON document.
@@ -237,19 +305,127 @@ impl Model {
         }
     }
 
+    // ---- Acquisition plans ----
+
+    /// Reads an ESA acquisition plan (KML).
+    pub fn load_plan(self, name: &str, text: &str) {
+        match plan::parse_kml(text, name) {
+            Ok(file) => {
+                self.say(format!(
+                    "Plan of {} loaded: {} segments, {} to {}",
+                    file.sat,
+                    file.segments.len(),
+                    file.start.format("%d %b"),
+                    file.end.format("%d %b")
+                ));
+                self.plans.update(|p| p.add(file));
+            }
+            Err(e) => self.say(format!("{name}: {e}")),
+        }
+    }
+
+    pub fn remove_plan(self, name: &str) {
+        self.plans.update(|p| p.files.retain(|f| f.name != name));
+    }
+
+    /// Whether the mission plans this acquisition (tracked).
+    pub fn plan_status(self, a: &Acquisition) -> Status {
+        let Some(short) = self.sats.with(|s| s.get(a.sat).map(|s| s.info.short)) else { return Status::Unknown };
+        self.observer.with(|obs| self.plans.with(|p| p.status_for(short, a.time, obs)))
+    }
+
     // ---- Forecast ----
 
     pub fn request_forecast(self) {
         let now = self.clock.get_untracked().now();
         let start = now - Duration::hours(1);
         let end = now + Duration::seconds((self.days.get_untracked() * 86_400.0) as i64);
-        let job = predict::Job::new(self.sats.get_untracked(), self.observer.get_untracked(), start, end, self.min_el);
-        self.job.set_value(Some(job));
+        let job = self.job_id.get_value() + 1;
+        self.job_id.set_value(job);
         self.window.set(Some((start, end)));
         self.forecast.set(None);
         self.progress.set(Some(0.0));
+        let sats = self.sats.get_untracked();
+        let obs = self.observer.get_untracked();
+        let request = Request::new(job, &sats, &obs, start, end, self.min_el);
+        let sent = serde_json::to_string(&request).is_ok_and(|text| self.send_to_worker(text));
+        let local = (!sent).then(|| predict::Job::new(sats, obs, start, end, self.min_el));
+        self.job.set_value(local);
     }
 
+    /// Hands a forecast to the worker; false when there is none.
+    fn send_to_worker(self, request: String) -> bool {
+        POOL.with_borrow_mut(|pool| {
+            if pool.broken {
+                return false;
+            }
+            // A forecast for an older request: start over.
+            if pool.busy {
+                if let Some(w) = pool.worker.take() {
+                    w.terminate();
+                }
+                pool.ready = false;
+                pool.busy = false;
+            }
+            if pool.worker.is_none() {
+                match self.spawn_worker() {
+                    Some(w) => pool.worker = Some(w),
+                    None => {
+                        pool.broken = true;
+                        return false;
+                    }
+                }
+            }
+            match &pool.worker {
+                Some(w) if pool.ready => {
+                    w.post_message(&JsValue::from_str(&request)).ok();
+                    pool.busy = true;
+                }
+                _ => pool.queued = Some(request),
+            }
+            true
+        })
+    }
+
+    fn spawn_worker(self) -> Option<Worker> {
+        let worker = Worker::new("./worker_loader.js").ok()?;
+        let on_message = Closure::<dyn FnMut(MessageEvent)>::new(move |e: MessageEvent| {
+            let Some(reply) = e.data().as_string().and_then(|t| serde_json::from_str::<Reply>(&t).ok()) else { return };
+            match reply {
+                Reply::Ready => POOL.with_borrow_mut(|p| {
+                    p.ready = true;
+                    if let (Some(w), Some(q)) = (&p.worker, p.queued.take()) {
+                        w.post_message(&JsValue::from_str(&q)).ok();
+                        p.busy = true;
+                    }
+                }),
+                Reply::Progress { job, share } if job == self.job_id.get_value() => self.progress.set(Some(share)),
+                Reply::Progress { .. } => {}
+                Reply::Done { job, forecast } => {
+                    POOL.with_borrow_mut(|p| p.busy = false);
+                    if job == self.job_id.get_value() {
+                        self.progress.set(None);
+                        self.forecast.set(Some(Arc::new(forecast)));
+                    }
+                }
+            }
+        });
+        worker.set_onmessage(Some(on_message.as_ref().unchecked_ref()));
+        on_message.forget();
+        let on_error = Closure::<dyn FnMut(web_sys::Event)>::new(move |_: web_sys::Event| {
+            POOL.with_borrow_mut(|p| {
+                p.broken = true;
+                p.worker = None;
+                p.busy = false;
+            });
+            self.request_forecast();
+        });
+        worker.set_onerror(Some(on_error.as_ref().unchecked_ref()));
+        on_error.forget();
+        Some(worker)
+    }
+
+    /// Advances a forecast running on the page.
     fn step_forecast(self) {
         let mut out = None;
         self.job.update_value(|job| {
@@ -268,35 +444,78 @@ impl Model {
         }
     }
 
-    /// Upcoming opportunities under the list's filters (tracked).
+    pub fn cloud_at(self, t: DateTime<Utc>) -> Option<f64> {
+        self.clouds.with(|c| c.as_ref().and_then(|c| c.at(t)))
+    }
+
+    /// The quality score of an opportunity (tracked).
+    pub fn score(self, a: &Acquisition) -> f64 {
+        let Some(kind) = self.sats.with(|s| s.get(a.sat).map(|s| s.info.kind)) else { return 0.0 };
+        quality::score(a, kind, self.cloud_at(a.time))
+    }
+
+    /// Opportunities from now on under the list's filters (tracked).
     pub fn upcoming(self, limit: usize) -> Vec<Acquisition> {
+        self.opportunities(self.order.get(), limit)
+    }
+
+    pub fn opportunities(self, order: Order, limit: usize) -> Vec<Acquisition> {
         let Some(fc) = self.forecast.get() else { return Vec::new() };
         let now = self.now.get();
         let unusable = self.show_unusable.get();
         let only = self.only_selected.get().then(|| self.selected_index()).flatten();
         let sats = self.sats.get();
-        fc.acquisitions
+        let list = fc
+            .acquisitions
             .iter()
             .filter(|a| a.time >= now - Duration::minutes(2))
             .filter(|a| only.is_none_or(|i| a.sat == i))
-            .filter(|a| sats.get(a.sat).is_some_and(|s| unusable || a.usable(s.info.kind)))
-            .take(limit)
-            .cloned()
-            .collect()
+            .filter(|a| sats.get(a.sat).is_some_and(|s| unusable || a.usable(s.info.kind)));
+        match order {
+            Order::Soonest => list.take(limit).cloned().collect(),
+            Order::Best => {
+                let mut scored: Vec<(f64, Acquisition)> = list.map(|a| (self.score(a), a.clone())).collect();
+                scored.sort_by(|a, b| b.0.total_cmp(&a.0));
+                scored.into_iter().take(limit).map(|(_, a)| a).collect()
+            }
+        }
     }
 
-    pub fn cloud_at(self, t: DateTime<Utc>) -> Option<f64> {
-        self.clouds.with(|c| c.as_ref().and_then(|c| c.at(t)))
+    /// Downloads the upcoming opportunities as CSV or iCalendar.
+    pub fn export(self, calendar: bool) {
+        if self.forecast.get_untracked().is_none() {
+            self.say("The forecast is still being computed");
+            return;
+        }
+        let list = untrack(|| self.opportunities(Order::Soonest, usize::MAX));
+        let refs: Vec<&Acquisition> = list.iter().collect();
+        let sats = self.sats.get_untracked();
+        let obs = self.observer.get_untracked();
+        let result = self.plans.with_untracked(|plans| {
+            self.clouds.with_untracked(|clouds| {
+                let sheet = export::Sheet {
+                    app: "orbitglobe",
+                    sats: &sats,
+                    observer: &obs,
+                    clouds: clouds.as_ref(),
+                    plans,
+                    now: self.clock.get_untracked().now(),
+                };
+                let (ext, text) = if calendar { ("ics", export::ics(&sheet, &refs)) } else { ("csv", export::csv(&sheet, &refs)) };
+                platform::deliver(&export::file_name(&sheet, ext), &text)
+            })
+        });
+        match result {
+            Ok(name) => self.say(format!("{} opportunities saved to {name}", refs.len())),
+            Err(e) => self.say(format!("Export failed: {e}")),
+        }
     }
 
     // ---- Per frame ----
 
     /// Starts the loop that moves the globe and advances the forecast.
     pub fn run(self) {
-        use std::cell::RefCell;
         use std::rc::Rc;
-        use wasm_bindgen::JsCast;
-        use wasm_bindgen::closure::Closure;
 
         type Frame = Closure<dyn FnMut()>;
         let slot: Rc<RefCell<Option<Frame>>> = Rc::new(RefCell::new(None));
@@ -316,7 +535,10 @@ impl Model {
         let clock = self.clock.get_untracked();
         let now = clock.now();
         let sats = self.sats.get_untracked();
-        globe::update(clock.now_ms(), &globe::positions(&sats, now));
+        let on_globe = self.view.get_untracked() == View::Globe;
+        if on_globe {
+            globe::update(clock.now_ms(), &globe::positions(&sats, now));
+        }
 
         let real = js_sys::Date::now();
         if real - self.last_tick.get_value() >= TICK_MS {
@@ -328,12 +550,14 @@ impl Model {
         }
 
         // A new forecast when the time leaves the one computed.
-        let outside = self.window.get_untracked().is_some_and(|(a, b)| now < a || now > b - Duration::hours(6));
-        if self.job.with_value(Option::is_none) && (outside || self.window.get_untracked().is_none()) {
+        let outside = self.window.get_untracked().is_none_or(|(a, b)| now < a || now > b - Duration::hours(6));
+        if outside && self.progress.get_untracked().is_none() {
             self.request_forecast();
         }
         self.step_forecast();
-        self.draw_orbit(&sats, now);
+        if on_globe {
+            self.draw_orbit(&sats, now);
+        }
     }
 
     /// Redraws the selected satellite's orbit once the time has moved on.
@@ -369,8 +593,8 @@ impl Model {
     /// Rebuilds the fleet from the catalog and the elements.
     fn rebuild(self) {
         let sats = self.elements.with_value(|e| build_sats(e, &self.catalog.get_untracked()));
-        if self.selected.get_untracked().is_none_or(|n| !sats.iter().any(|s| s.info.norad == n)) {
-            self.selected.set(sats.first().map(|s| s.info.norad));
+        if self.selected.get_untracked().is_some_and(|n| !sats.iter().any(|s| s.info.norad == n)) {
+            self.selected.set(None);
         }
         self.event.set(None);
         self.sats.set(Arc::new(sats));
@@ -450,8 +674,11 @@ impl Model {
             return;
         }
         spawn_local(async move {
-            match fetch::text(&clouds::url(at.0, at.1)).await.and_then(|t| clouds::parse(&t, at)) {
-                Ok(c) if self.observer.with_untracked(|o| (o.lat, o.lon) == at) => self.clouds.set(Some(c)),
+            match fetch::text(&sky::url(at.0, at.1)).await.and_then(|t| sky::parse(&t, at)) {
+                Ok((clouds, layers)) if self.observer.with_untracked(|o| (o.lat, o.lon) == at) => {
+                    self.clouds.set(Some(clouds));
+                    self.layers.set(Some(layers));
+                }
                 Ok(_) => {}
                 Err(e) => self.say(format!("No cloud forecast ({e})")),
             }

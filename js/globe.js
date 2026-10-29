@@ -41,10 +41,15 @@ let highlightEntities = [];
 let aoiEntities = [];
 const scratch = { position: null, date: null };
 
-export function init(container, credits, satCallback, groundCallback) {
+// The viewer starts as soon as this module is loaded, while the WebAssembly
+// is still being fetched and compiled: its shaders and first tiles do not
+// wait for the application.
+boot();
+
+function boot() {
   const Cesium = C();
-  onSat = satCallback;
-  onGround = groundCallback;
+  const container = document.getElementById("globe");
+  if (viewer || !Cesium || !container) return;
   viewer = new Cesium.Viewer(container, {
     baseLayer: false,
     animation: false,
@@ -58,7 +63,7 @@ export function init(container, credits, satCallback, groundCallback) {
     infoBox: false,
     selectionIndicator: false,
     shouldAnimate: false,
-    creditContainer: document.getElementById(credits),
+    creditContainer: document.getElementById("credits"),
   });
   const scene = viewer.scene;
   scene.globe.baseColor = Cesium.Color.fromCssColorString("#0d2236");
@@ -71,11 +76,25 @@ export function init(container, credits, satCallback, groundCallback) {
   viewer.clock.shouldAnimate = false;
   scratch.position = new Cesium.Cartesian3();
 
+  // Over the saved area from the first frame, so that no tile is fetched
+  // for another part of the world.
+  const [lat, lon] = savedArea();
+  viewer.camera.setView({ destination: Cesium.Cartesian3.fromDegrees(lon, lat, 16_000_000) });
+
+  // The stars (six large images) wait for the map's first tiles.
+  scene.skyBox.show = false;
+  const stars = scene.globe.tileLoadProgressEvent.addEventListener((queued) => {
+    if (queued > 0 || !scene.globe.tilesLoaded) return;
+    stars();
+    scene.skyBox.show = true;
+  });
+
   points = scene.primitives.add(new Cesium.PointPrimitiveCollection());
   labels = scene.primitives.add(new Cesium.LabelCollection());
 
   const handler = new Cesium.ScreenSpaceEventHandler(scene.canvas);
   handler.setInputAction((click) => {
+    if (!onSat) return;
     const hit = scene.pick(click.position);
     if (Cesium.defined(hit) && hit.id && hit.id.sat !== undefined) {
       onSat(hit.id.sat);
@@ -94,6 +113,28 @@ export function init(container, credits, satCallback, groundCallback) {
   }, Cesium.ScreenSpaceEventType.MOUSE_MOVE);
 
   setBase(base);
+}
+
+/// The area of interest saved by the application (orbitui's config), or
+/// Brasília, its default.
+function savedArea() {
+  try {
+    const text = localStorage.getItem("orbitui.aoi.txt") || "";
+    const lines = text.split("\n").map((line) => line.split("=").map((part) => part.trim()));
+    const value = (key) => Number((lines.find(([k]) => k === key) || [])[1]);
+    const lat = value("lat");
+    const lon = value("lon");
+    if (Number.isFinite(lat) && Number.isFinite(lon)) return [lat, lon];
+  } catch {
+    // No storage: the default.
+  }
+  return [-15.7939, -47.8828];
+}
+
+export function init(satCallback, groundCallback) {
+  onSat = satCallback;
+  onGround = groundCallback;
+  boot();
   drawFleet();
   if (orbit) drawOrbit();
   drawHighlight();
@@ -101,6 +142,7 @@ export function init(container, credits, satCallback, groundCallback) {
 }
 
 export function setBase(name) {
+  if (viewer && name === base && viewer.imageryLayers.length > 0) return;
   base = name;
   if (!viewer) return;
   const layers = viewer.imageryLayers;
@@ -329,6 +371,13 @@ export function flyTo(lat, lon, height, seconds) {
 
 export function setLabels(on) {
   showLabels = on;
+}
+
+/// Stops rendering while another view covers the globe.
+export function setActive(on) {
+  if (!viewer) return;
+  viewer.useDefaultRenderLoop = on;
+  if (on) viewer.resize();
 }
 
 export function setPicking(on) {

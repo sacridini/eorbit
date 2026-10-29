@@ -8,7 +8,7 @@ use wasm_bindgen::prelude::*;
 
 #[wasm_bindgen(module = "/js/globe.js")]
 extern "C" {
-    pub fn init(container: &str, credits: &str, on_sat: &js_sys::Function, on_ground: &js_sys::Function);
+    pub fn init(on_sat: &js_sys::Function, on_ground: &js_sys::Function);
     #[wasm_bindgen(js_name = setBase)]
     pub fn set_base(name: &str);
     #[wasm_bindgen(js_name = setFleet)]
@@ -30,6 +30,8 @@ extern "C" {
     pub fn set_labels(on: bool);
     #[wasm_bindgen(js_name = setPicking)]
     pub fn set_picking(on: bool);
+    #[wasm_bindgen(js_name = setActive)]
+    pub fn set_active(on: bool);
 }
 
 pub fn fleet(sats: &[Sat]) {
