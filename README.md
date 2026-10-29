@@ -35,10 +35,12 @@ Four more views share the screen with the opportunities:
   its best opportunity, with the best chance of the forecast on top.
 - Revisit: how often each satellite (and the fleet, and the good images
   alone) images the area, its longest wait and the gaps on a strip.
-- Images: the scenes Sentinel-2, Landsat and Sentinel-1 actually acquired over
-  the area in the last 30 to 180 days, with their previews and cloud cover,
-  the latest clear image and how often one comes. A scene opens on the globe,
-  draped over the map.
+- Images: the scenes Sentinel-2, Landsat, Sentinel-1, CBERS-4/4A and
+  Amazonia-1 actually acquired over the area in the last 30 to 180 days, with
+  their previews and cloud cover, the latest clear image and how often one
+  comes. A scene opens on the globe, draped over the map, and downloads as
+  GeoTIFF: the area cut out of the scene (Planetary Computer), the whole
+  scene in true colour (Earth Search) or its bands (CBERS, Amazonia).
 
 The page's address follows the screen (area, polygon included, view,
 satellite, opportunity, forecast span), so "Share" copies a link that opens
@@ -77,7 +79,10 @@ trunk build --release
 - Acquired scenes, their previews and map tiles: the
   [Microsoft Planetary Computer](https://planetarycomputer.microsoft.com)
   STAC catalogue (Sentinel-2 L2A, Landsat Collection 2 Level-2, Sentinel-1
-  GRD).
+  GRD); [Earth Search](https://element84.com/earth-search/) by Element 84 on
+  AWS when the browser cannot reach it (privacy extensions often block it);
+  INPE's [Brazil Data Cube](https://data.inpe.br/bdc/) for CBERS-4, CBERS-4A
+  and Amazonia-1 (Level 4).
 - Cloud forecast and place names: [Open-Meteo.com](https://open-meteo.com)
   (CC BY 4.0), with [GeoNames](https://www.geonames.org) for places.
 - Base maps: [Sentinel-2 cloudless](https://s2maps.eu) by EOX IT Services GmbH

@@ -1334,12 +1334,12 @@ h2 {
 }
 
 .scene-card {
+  position: relative;
   display: flex;
   flex-direction: column;
   border: 1px solid var(--line);
   border-radius: 12px;
   background: rgba(6, 16, 28, 0.45);
-  overflow: hidden;
 }
 
 .scene-card.on { border-color: var(--sat); box-shadow: 0 0 0 1px var(--sat); }
@@ -1348,6 +1348,8 @@ h2 {
   position: relative;
   display: block;
   aspect-ratio: 1;
+  overflow: hidden;
+  border-radius: 11px 11px 0 0;
   background:
     repeating-linear-gradient(45deg, rgba(160, 190, 225, 0.05) 0 6px, transparent 6px 12px),
     rgba(6, 16, 28, 0.8);
@@ -1426,3 +1428,36 @@ h2 {
   stroke-linecap: round;
   vertical-align: -2px;
 }
+
+/* A scene's files, in a list over the card's picture. */
+.downloads summary { list-style: none; cursor: pointer; }
+.downloads summary::-webkit-details-marker { display: none; }
+.downloads[open] summary { color: var(--ink); border-color: var(--line-strong); }
+
+.downloads ul {
+  position: absolute;
+  z-index: 5;
+  left: 8px;
+  right: 8px;
+  bottom: 46px;
+  max-height: 240px;
+  overflow: auto;
+  margin: 0;
+  padding: 6px;
+  list-style: none;
+  background: var(--panel-solid);
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  box-shadow: 0 12px 30px -14px #000;
+}
+
+.downloads a {
+  display: block;
+  padding: 6px 8px;
+  border-radius: 7px;
+  font-size: 12.5px;
+  color: var(--ink);
+  text-decoration: none;
+}
+
+.downloads a:hover { background: var(--hover); }

@@ -1,6 +1,6 @@
 //! The application's state, its downloads and the per-frame work.
 
-use crate::archive::{self, Mission, Pass};
+use crate::archive::{self, Catalogue, Pass};
 use crate::share::{self, Shared};
 use crate::sky::{self, Layers};
 use crate::{color, fetch, globe, page, quality};
@@ -159,6 +159,8 @@ pub struct Archive {
     /// Missions whose search failed, and why.
     pub errors: Vec<String>,
     pub since: Option<DateTime<Utc>>,
+    /// Where the scenes come from.
+    pub catalogue: Option<archive::Catalogue>,
 }
 
 /// How the list of opportunities is ordered.
@@ -460,31 +462,45 @@ impl Model {
         let start = end - Duration::days(days.into());
         self.archive.set(Archive { key: key.clone(), loading: true, since: Some(start), ..Archive::default() });
         spawn_local(async move {
-            let searches = Mission::ALL.map(|mission| {
-                let url = archive::url(mission, &obs, start, end);
-                async move { (mission, fetch::text_owned(url).await) }
-            });
-            let answers = futures::future::join_all(searches).await;
-            let mut scenes = Vec::new();
-            let mut errors = Vec::new();
-            let unreachable = answers.iter().all(|(_, a)| a.as_ref().is_err_and(|e| !e.starts_with("HTTP")));
-            for (mission, answer) in answers {
-                match answer.and_then(|text| archive::parse(&text, mission, &obs)) {
-                    Ok(found) => scenes.extend(found),
-                    Err(e) => errors.push(format!("{}: {e}", mission.label())),
+            let global = async {
+                let mut catalogue = Catalogue::PlanetaryComputer;
+                let mut result = search_catalogue(catalogue, &obs, start, end).await;
+                // Blocked (often by a privacy extension): the other catalogue.
+                if result.is_none() {
+                    catalogue = Catalogue::EarthSearch;
+                    result = search_catalogue(catalogue, &obs, start, end).await;
                 }
-            }
-            // No answer at all: the browser did not let the requests out.
-            if unreachable {
-                errors = vec![format!(
-                    "the browser could not reach {} (offline, or blocked by a content blocker or strict tracking protection)",
-                    archive::HOST
-                )];
-            }
+                (catalogue, result)
+            };
+            let brazil = search_catalogue(Catalogue::BrazilDataCube, &obs, start, end);
+            let ((catalogue, result), brazil) = futures::future::join(global, brazil).await;
             if self.archive.with_untracked(|a| a.key != key) {
                 return;
             }
-            self.archive.set(Archive { key, loading: false, passes: archive::passes(scenes), errors, since: Some(start) });
+            let unreachable = |hosts: &str| {
+                format!(
+                    "the browser could not reach {hosts}. Offline, or blocked by a privacy extension (Privacy Badger, uBlock) or strict tracking protection?"
+                )
+            };
+            let (mut scenes, mut errors) = result.unwrap_or_else(|| {
+                let hosts = [Catalogue::PlanetaryComputer.host(), Catalogue::EarthSearch.host()].join(" and ");
+                (Vec::new(), vec![unreachable(&hosts)])
+            });
+            match brazil {
+                Some((more, failed)) => {
+                    scenes.extend(more);
+                    errors.extend(failed);
+                }
+                None => errors.push(unreachable(Catalogue::BrazilDataCube.host())),
+            }
+            self.archive.set(Archive {
+                key,
+                loading: false,
+                passes: archive::passes(scenes),
+                errors,
+                since: Some(start),
+                catalogue: Some(catalogue),
+            });
         });
     }
 
@@ -506,26 +522,32 @@ impl Model {
         let key = pass.key();
         self.scene.set(Some(pass.clone()));
         spawn_local(async move {
-            let tiles = futures::future::join_all(pass.scenes.iter().map(|s| async move {
-                let text = fetch::text(s.tilejson.as_deref()?).await.ok()?;
-                let v: Value = serde_json::from_str(&text).ok()?;
+            let layers = futures::future::join_all(pass.scenes.iter().map(|s| async move {
+                let tiles = match s.tilejson.as_deref() {
+                    Some(url) => fetch::text(url)
+                        .await
+                        .ok()
+                        .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+                        .and_then(|v| v["tiles"][0].as_str().map(str::to_string)),
+                    None => None,
+                };
                 let rings: Vec<Vec<f64>> = s.rings.iter().map(|r| r.iter().flat_map(|&(lat, lon)| [lon, lat]).collect()).collect();
-                Some(json!({
-                    "tiles": v["tiles"][0].as_str()?,
+                json!({
+                    "tiles": tiles,
+                    "image": s.snapshot,
                     "west": s.bbox[0],
                     "south": s.bbox[1],
                     "east": s.bbox[2],
                     "north": s.bbox[3],
                     "rings": rings,
-                }))
+                })
             }))
             .await;
             if self.scene.with_untracked(|p| p.as_ref().map(Pass::key)) != Some(key) {
                 return;
             }
-            let layers: Vec<Value> = tiles.into_iter().flatten().collect();
-            if layers.is_empty() {
-                self.say("The catalogue did not give this image's map tiles");
+            if layers.iter().all(|l| l["tiles"].is_null() && l["image"].is_null()) {
+                self.say("Only the image's outline: its catalogue does not draw it on maps");
             }
             globe::set_scenes(&Value::Array(layers).to_string(), &color);
         });
@@ -936,6 +958,34 @@ impl Model {
             _ => Ok(places),
         }
     }
+}
+
+/// One catalogue's scenes over the area and the missions that failed; None
+/// when the browser reached none of its searches.
+async fn search_catalogue(
+    catalogue: Catalogue,
+    obs: &Observer,
+    start: DateTime<Utc>,
+    end: DateTime<Utc>,
+) -> Option<(Vec<archive::Scene>, Vec<String>)> {
+    let searches = catalogue.missions().iter().map(|&mission| {
+        let url = archive::url(catalogue, mission, obs, start, end);
+        async move { (mission, fetch::text_owned(url).await) }
+    });
+    let answers = futures::future::join_all(searches).await;
+    // Only network errors (no HTTP status): the requests never went out.
+    if answers.iter().all(|(_, a)| a.as_ref().is_err_and(|e| !e.starts_with("HTTP"))) {
+        return None;
+    }
+    let mut scenes = Vec::new();
+    let mut errors = Vec::new();
+    for (mission, answer) in answers {
+        match answer.and_then(|text| archive::parse(&text, mission, obs)) {
+            Ok(found) => scenes.extend(found),
+            Err(e) => errors.push(format!("{}: {e}", mission.label())),
+        }
+    }
+    Some((scenes, errors))
 }
 
 fn absorb(found: &mut Vec<Elements>, more: Vec<Elements>, wanted: &HashSet<u64>) {

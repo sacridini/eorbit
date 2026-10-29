@@ -191,17 +191,6 @@ function drawScenes() {
   clear(sceneEntities);
   const outline = Cesium.Color.fromCssColorString(sceneColor);
   for (const scene of scenes) {
-    const layer = viewer.imageryLayers.addImageryProvider(
-      new Cesium.UrlTemplateImageryProvider({
-        url: scene.tiles,
-        rectangle: Cesium.Rectangle.fromDegrees(scene.west, scene.south, scene.east, scene.north),
-        maximumLevel: 14,
-        credit: new Cesium.Credit("Scene rendered by Microsoft Planetary Computer", false),
-      }),
-    );
-    // The scene stays bright on the night side: it was taken in daylight.
-    layer.nightAlpha = 1.0;
-    sceneLayers.push(layer);
     for (const ring of scene.rings) {
       if (ring.length < 6) continue;
       const positions = Cesium.Cartesian3.fromDegreesArray(ring);
@@ -211,6 +200,34 @@ function drawScenes() {
         }),
       );
     }
+    const rectangle = Cesium.Rectangle.fromDegrees(scene.west, scene.south, scene.east, scene.north);
+    let layer;
+    if (scene.tiles) {
+      layer = viewer.imageryLayers.addImageryProvider(
+        new Cesium.UrlTemplateImageryProvider({
+          url: scene.tiles,
+          rectangle,
+          maximumLevel: 14,
+          credit: new Cesium.Credit("Scene rendered by Microsoft Planetary Computer", false),
+        }),
+      );
+    } else if (scene.image) {
+      // One picture of the whole scene; its white ground is see-through.
+      layer = Cesium.ImageryLayer.fromProviderAsync(
+        Cesium.SingleTileImageryProvider.fromUrl(scene.image, {
+          rectangle,
+          credit: new Cesium.Credit("Scene by INPE, Brazil Data Cube", false),
+        }),
+      );
+      layer.colorToAlpha = Cesium.Color.WHITE;
+      layer.colorToAlphaThreshold = 0.004;
+      viewer.imageryLayers.add(layer);
+    } else {
+      continue;
+    }
+    // The scene stays bright on the night side: it was taken in daylight.
+    layer.nightAlpha = 1.0;
+    sceneLayers.push(layer);
   }
 }
 

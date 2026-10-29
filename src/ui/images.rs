@@ -2,7 +2,7 @@
 //! cloudy, and the scenes themselves, on the page and on the globe.
 
 use super::scale;
-use crate::archive::{Mission, Pass};
+use crate::archive::{Catalogue, Mission, Pass};
 use crate::fmt;
 use crate::model::Model;
 use chrono::Utc;
@@ -94,7 +94,21 @@ pub fn Images() -> impl IntoView {
                     </button>
                 </div>
                 <p class="legend muted">
-                    "Scenes already acquired over the area, from the Planetary Computer's catalogue. Cloud is each scene's own estimate, over the whole scene; a scene opens on the globe."
+                    {move || {
+                        let from = m.archive.with(|a| a.catalogue).unwrap_or(Catalogue::PlanetaryComputer);
+                        let mut text = format!(
+                            "Scenes already acquired over the area, from the catalogues of {} and {} (CBERS, Amazonia). Cloud is each scene's own estimate, over the whole scene; a scene opens on the globe.",
+                            from.label(),
+                            Catalogue::BrazilDataCube.label()
+                        );
+                        if from == Catalogue::EarthSearch {
+                            text.push_str(&format!(
+                                " The Planetary Computer could not be reached (a privacy extension may block {}): no Sentinel-1, no Landsat previews, and only outlines on the globe.",
+                                Catalogue::PlanetaryComputer.host()
+                            ));
+                        }
+                        text
+                    }}
                 </p>
             </div>
             <div class="board-body">
@@ -196,7 +210,11 @@ fn Card(pass: Pass) -> impl IntoView {
     let m = expect_context::<Model>();
     let scene = pass.main().clone();
     let info = m.platform_sat(&pass.platform);
-    let name = info.map_or_else(|| pass.platform.clone(), |i| i.name.to_string());
+    let mut name = info.map_or_else(|| pass.platform.clone(), |i| i.name.to_string());
+    if let Some(camera) = pass.instrument.as_ref().filter(|_| pass.mission.names_instrument()) {
+        name = format!("{name} {camera}");
+    }
+    let downloads = pass.downloads();
     let color = m.platform_color(&pass.platform);
     let time = pass.time;
     let utc = m.utc;
@@ -227,7 +245,9 @@ fn Card(pass: Pass) -> impl IntoView {
                         }
                             .into_any()
                     }
-                    _ => view! { <span class="scene-cloud radar">"radar"</span> }.into_any(),
+                    (false, _) => view! { <span class="scene-cloud radar">"radar"</span> }.into_any(),
+                    // The catalogue gives no cloud estimate (the Data Cube).
+                    (true, None) => ().into_any(),
                 }}
             </button>
             <div class="scene-meta">
@@ -238,6 +258,20 @@ fn Card(pass: Pass) -> impl IntoView {
             <div class="scene-actions">
                 <button class="tool" on:click=move |_| m.show_scene(show_button.clone())>"On the globe"</button>
                 {scene.page.map(|href| view! { <a class="tool" href=href target="_blank" rel="noopener">"Open"</a> })}
+                {(!downloads.is_empty())
+                    .then(|| {
+                        view! {
+                            <details class="downloads">
+                                <summary class="tool">"Download"</summary>
+                                <ul>
+                                    {downloads
+                                        .into_iter()
+                                        .map(|d| view! { <li><a href=d.url download rel="noopener">{d.label}</a></li> })
+                                        .collect_view()}
+                                </ul>
+                            </details>
+                        }
+                    })}
             </div>
         </article>
     }
