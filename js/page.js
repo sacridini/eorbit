@@ -33,6 +33,17 @@ export async function copy(text) {
   }
 }
 
+/// Saves the file at a URL (one the browser cannot show downloads).
+export function save(url) {
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "";
+  a.rel = "noopener";
+  document.body.append(a);
+  a.click();
+  a.remove();
+}
+
 /// Calls back with the new state when the user edits the address.
 export function onHashChange(callback) {
   addEventListener("hashchange", () => callback(location.hash.slice(1)));

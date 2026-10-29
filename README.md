@@ -38,9 +38,10 @@ Four more views share the screen with the opportunities:
 - Images: the scenes Sentinel-2, Landsat, Sentinel-1, CBERS-4/4A and
   Amazonia-1 actually acquired over the area in the last 30 to 180 days, with
   their previews and cloud cover, the latest clear image and how often one
-  comes. A scene opens on the globe, draped over the map, and downloads as
-  GeoTIFF: the area cut out of the scene (Planetary Computer), the whole
-  scene in true colour (Earth Search) or its bands (CBERS, Amazonia).
+  comes, filtered by a cloud slider. A scene opens on the globe, draped over
+  the map, and downloads as GeoTIFF: the area or the whole scene as shown,
+  and the whole scene's own files at full resolution (Sentinel-2 true colour,
+  Landsat bands, Sentinel-1 VV/VH, CBERS and Amazonia bands).
   NASA's daily MODIS and VIIRS views of the region (last 14 days) come
   along on request, as GeoTIFF too.
 - Daily view: NASA's view of a recent day (Terra or Aqua MODIS, Suomi NPP,

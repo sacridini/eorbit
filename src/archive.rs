@@ -25,6 +25,9 @@ const MAX_VERTICES: usize = 80;
 const PREVIEW_PX: u32 = 360;
 /// Largest side of a cut-out of the area, in pixels.
 const CUT_PX: u32 = 4096;
+/// Largest side of a whole scene cut out, in pixels: the Planetary Computer
+/// gives up on bigger ones (a Landsat scene at 4096 px times out).
+const WHOLE_PX: u32 = 2048;
 /// Half the side of the cut-out around a point, in degrees of latitude.
 const POINT_HALF_DEG: f64 = 0.1;
 const PC_DATA: &str = "https://planetarycomputer.microsoft.com/api/data/v1";
@@ -136,6 +139,15 @@ impl Mission {
 pub struct Download {
     pub label: String,
     pub url: String,
+    /// The Planetary Computer collection whose access token the file needs
+    /// (its storage is open only with one).
+    pub sign: Option<&'static str>,
+}
+
+impl Download {
+    fn open(label: impl Into<String>, url: impl Into<String>) -> Self {
+        Download { label: label.into(), url: url.into(), sign: None }
+    }
 }
 
 /// One scene: a tile (Sentinel-2), a path/row (Landsat, CBERS) or a frame
@@ -214,7 +226,7 @@ impl Pass {
         let main = self.main();
         let mut list = main.downloads.clone();
         for s in self.scenes.iter().filter(|s| s.id != main.id) {
-            list.extend(s.downloads.iter().map(|d| Download { label: format!("{} ({})", d.label, short_id(&s.id)), url: d.url.clone() }));
+            list.extend(s.downloads.iter().map(|d| Download { label: format!("{} ({})", d.label, short_id(&s.id)), ..d.clone() }));
         }
         list
     }
@@ -335,7 +347,7 @@ fn scene(f: &Value, mission: Mission, obs: &Observer) -> Option<Scene> {
             .and_then(|links| links.iter().find(|l| l["rel"] == "preview"))
             .and_then(|l| l["href"].as_str())
             .map(str::to_string),
-        downloads: downloads(f, rendered.as_deref(), obs),
+        downloads: downloads(f, mission, rendered.as_deref(), bbox, obs),
         over_center: aoi::in_rings(&rings, obs.lat, obs.lon),
         id,
         rings,
@@ -359,17 +371,36 @@ fn platform_from_id(id: &str) -> Option<(String, Option<String>)> {
 
 /// What can be downloaded of a scene: a cut-out of the area where the
 /// catalogue renders one, else its open files.
-fn downloads(f: &Value, rendered: Option<&str>, obs: &Observer) -> Vec<Download> {
+fn downloads(f: &Value, mission: Mission, rendered: Option<&str>, bbox: [f64; 4], obs: &Observer) -> Vec<Download> {
     let mut list = Vec::new();
     // The Planetary Computer cuts any box out of the scene, rendered as its
-    // preview is (true colour, radar backscatter).
+    // preview is (true colour, radar backscatter), and keeps the scene's
+    // own files, at full resolution, behind an access token.
     if let Some(query) = rendered.and_then(|u| u.split_once('?')).map(|(_, q)| q) {
-        let query: Vec<&str> = query.split('&').filter(|kv| !kv.starts_with("format=")).collect();
-        let [w, s, e, n] = area_box(obs);
-        list.push(Download {
-            label: "Your area, as shown (GeoTIFF)".into(),
-            url: format!("{PC_DATA}/item/bbox/{w:.5},{s:.5},{e:.5},{n:.5}.tif?{}&max_size={CUT_PX}", query.join("&")),
-        });
+        let query = query.split('&').filter(|kv| !kv.starts_with("format=")).collect::<Vec<_>>().join("&");
+        let cut = |[w, s, e, n]: [f64; 4], px: u32| format!("{PC_DATA}/item/bbox/{w:.5},{s:.5},{e:.5},{n:.5}.tif?{query}&max_size={px}");
+        list.push(Download::open("Your area, as shown", cut(area_box(obs), CUT_PX)));
+        list.push(Download::open(format!("Whole scene, as shown ({WHOLE_PX} px)"), cut(bbox, WHOLE_PX)));
+        let files: &[(&str, &str)] = match mission {
+            Mission::Sentinel2 => &[("visual", "Whole scene, true colour, 10 m")],
+            Mission::Landsat => &[
+                ("red", "Whole scene, red band, 30 m"),
+                ("green", "Whole scene, green band, 30 m"),
+                ("blue", "Whole scene, blue band, 30 m"),
+                ("nir08", "Whole scene, near infrared, 30 m"),
+            ],
+            Mission::Sentinel1 => &[
+                ("vv", "Whole scene, VV, 10 m (~1 GB)"),
+                ("vh", "Whole scene, VH, 10 m (~1 GB)"),
+            ],
+            _ => &[],
+        };
+        let collection = Catalogue::PlanetaryComputer.collections(mission);
+        for &(key, label) in files {
+            if let Some(href) = f["assets"][key]["href"].as_str() {
+                list.push(Download { sign: Some(collection), ..Download::open(label, href) });
+            }
+        }
         return list;
     }
     let Some(assets) = f["assets"].as_object() else { return list };
@@ -380,11 +411,11 @@ fn downloads(f: &Value, rendered: Option<&str>, obs: &Observer) -> Vec<Download>
             continue;
         }
         let label = match key.as_str() {
-            "visual" => "Whole scene, true colour (GeoTIFF)".to_string(),
-            k if k.starts_with("BAND") => format!("Band {} (GeoTIFF)", &k[4..]),
+            "visual" => "Whole scene, true colour, 10 m".to_string(),
+            k if k.starts_with("BAND") => format!("Whole scene, band {}", &k[4..]),
             _ => continue,
         };
-        list.push(Download { label, url: href.to_string() });
+        list.push(Download::open(label, href));
     }
     list
 }
@@ -488,8 +519,8 @@ pub fn daily(obs: &Observer, now: DateTime<Utc>) -> Vec<Scene> {
                         "https://worldview.earthdata.nasa.gov/?v={w:.4},{s:.4},{e:.4},{n:.4}&l=Coastlines_15m,{layer}&t={day}-T12:00:00Z"
                     )),
                     downloads: vec![
-                        Download { label: "Your area (GeoTIFF)".into(), url: snapshot(area, native(area), "image/tiff") },
-                        Download { label: "The region shown (GeoTIFF)".into(), url: snapshot(region, native(region), "image/tiff") },
+                        Download::open("Your area", snapshot(area, native(area), "image/tiff")),
+                        Download::open("The region shown", snapshot(region, native(region), "image/tiff")),
                     ],
                     rings: vec![ring.clone()],
                     bbox: region,

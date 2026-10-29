@@ -533,6 +533,23 @@ impl Model {
         });
     }
 
+    /// Saves a scene's file, asking first for its access token if it needs one.
+    pub fn download(self, file: archive::Download) {
+        let Some(collection) = file.sign else {
+            page::save(&file.url);
+            return;
+        };
+        spawn_local(async move {
+            match fetch::pc_token(collection).await {
+                Ok(token) => {
+                    self.say("Downloading the whole scene: a large file, it takes a while");
+                    page::save(&format!("{}?{token}", file.url));
+                }
+                Err(e) => self.say(format!("The Planetary Computer did not open the file: {e}")),
+            }
+        });
+    }
+
     /// A pass's satellite, and its camera where it has several worth naming.
     pub fn pass_name(self, pass: &Pass) -> String {
         let name = self.platform_sat(&pass.platform).map_or_else(|| pass.platform.clone(), |i| i.name.to_string());

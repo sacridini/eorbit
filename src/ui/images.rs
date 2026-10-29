@@ -10,23 +10,32 @@ use leptos::prelude::*;
 
 /// How far back the catalogue is searched, in days.
 const SPANS: [u32; 3] = [30, 90, 180];
-/// Cloud over a scene up to which an optical image counts as clear.
-pub const CLEAR: f64 = 20.0;
+/// Cloud over a scene up to which an optical image counts as clear, unless
+/// the slider asks for less.
+const CLEAR: u32 = 20;
 
 #[component]
 pub fn Images() -> impl IntoView {
     let m = expect_context::<Model>();
     // The daily views (five a day, hundreds of metres a pixel) wait to be asked for.
     let missions = RwSignal::new(Mission::ALL.into_iter().filter(|&m| m != Mission::Daily).collect::<Vec<_>>());
-    let clear_only = RwSignal::new(false);
+    // Most cloud shown on optical scenes, in percent; 100 shows them all,
+    // those with no estimate included.
+    let max_cloud = RwSignal::new(100_u32);
 
     let shown = Memo::new(move |_| {
         let wanted = missions.get();
-        let clear = clear_only.get();
+        let max = max_cloud.get();
         m.archive.with(|a| {
-            a.passes.iter().filter(|p| wanted.contains(&p.mission) && (!clear || p.clear(CLEAR))).cloned().collect::<Vec<_>>()
+            a.passes
+                .iter()
+                .filter(|p| wanted.contains(&p.mission) && (max >= 100 || p.clear(f64::from(max))))
+                .cloned()
+                .collect::<Vec<_>>()
         })
     });
+    // What the summary counts as clear.
+    let clear = Signal::derive(move || max_cloud.get().min(CLEAR));
 
     let toggle = move |mission: Mission| {
         missions.update(|list| match list.iter().position(|&x| x == mission) {
@@ -47,8 +56,16 @@ pub fn Images() -> impl IntoView {
                 let text = format!("{lead}: {}", a.errors.join("; "));
                 return Some(view! { <p class="hint warn">{text}</p> }.into_any());
             }
-            (a.passes.is_empty() && a.since.is_some())
-                .then(|| view! { <p class="hint">"No scene over this area in the catalogue for this span."</p> }.into_any())
+            if a.passes.is_empty() {
+                return a.since.map(|_| view! { <p class="hint">"No scene over this area in the catalogue for this span."</p> }.into_any());
+            }
+            (max_cloud.get() < 100 && shown.with(Vec::is_empty)).then(|| {
+                let text = format!(
+                    "No scene with at most {}% cloud in this span. Slide the cloud limit up, or search further back.",
+                    max_cloud.get()
+                );
+                view! { <p class="hint">{text}</p> }.into_any()
+            })
         })
     };
 
@@ -85,14 +102,24 @@ pub fn Images() -> impl IntoView {
                             }
                         })
                         .collect_view()}
-                    <button
-                        class="chip"
-                        class:on=clear_only
-                        title=format!("Optical scenes with at most {CLEAR:.0}% cloud, and radar scenes")
-                        on:click=move |_| clear_only.update(|c| *c = !*c)
-                    >
-                        "Clear only"
-                    </button>
+                    <label class="cloud-slider" title="Optical scenes with at most this much cloud (radar scenes stay)">
+                        <span>
+                            {move || match max_cloud.get() {
+                                100 => "Any cloud".to_string(),
+                                c => format!("Cloud ≤ {c}%"),
+                            }}
+                        </span>
+                        <input
+                            type="range"
+                            min="0"
+                            max="100"
+                            step="5"
+                            aria-label="Most cloud over a scene"
+                            prop:value=move || max_cloud.get().to_string()
+                            style=move || format!("--v: {}%", max_cloud.get())
+                            on:input=move |e| max_cloud.set(event_target_value(&e).parse().unwrap_or(100))
+                        />
+                    </label>
                 </div>
                 <p class="legend muted">
                     {move || {
@@ -115,7 +142,7 @@ pub fn Images() -> impl IntoView {
             </div>
             <div class="board-body">
                 {status}
-                <Summary/>
+                <Summary clear=clear/>
                 <Strip shown=shown/>
                 <div class="scene-grid">{cards}</div>
             </div>
@@ -125,17 +152,19 @@ pub fn Images() -> impl IntoView {
 
 /// The latest clear image, and how often one comes.
 #[component]
-fn Summary() -> impl IntoView {
+fn Summary(clear: Signal<u32>) -> impl IntoView {
     let m = expect_context::<Model>();
     move || {
         let utc = m.utc.get();
+        let limit = clear.get();
         m.archive.with(|a| {
-            let clear: Vec<&Pass> = a.passes.iter().filter(|p| p.mission.optical() && p.over_center() && p.clear(CLEAR)).collect();
+            let clear: Vec<&Pass> =
+                a.passes.iter().filter(|p| p.mission.optical() && p.over_center() && p.clear(f64::from(limit))).collect();
             let days = m.archive_days.get();
             let latest = clear.first().map(|&p| {
                 let pass = p.clone();
                 let text = format!(
-                    "Latest clear image: {}, {} ({:.0}% cloud), {}",
+                    "Latest clear image (≤ {limit}% cloud): {}, {} ({:.0}% cloud), {}",
                     m.platform_sat(&p.platform).map_or(p.platform.as_str(), |i| i.name),
                     fmt::day(p.time, utc),
                     p.cloud().unwrap_or(0.0),
@@ -149,9 +178,9 @@ fn Summary() -> impl IntoView {
             });
             let rate = match clear.len() {
                 _ if a.loading || a.since.is_none() => None,
-                0 => Some(format!("No clear optical image of the area's centre in {days} days.")),
+                0 => Some(format!("No optical image of the area's centre with at most {limit}% cloud in {days} days.")),
                 n => Some(format!(
-                    "{n} clear optical images of the area's centre in {days} days: one every {:.1} days on average.",
+                    "{n} optical images of the area's centre with at most {limit}% cloud in {days} days: one every {:.1} days on average.",
                     f64::from(days) / n as f64
                 )),
             };
@@ -269,9 +298,30 @@ fn Card(pass: Pass) -> impl IntoView {
                             <details class="downloads">
                                 <summary class="tool">"Download"</summary>
                                 <ul>
+                                    <li class="downloads-head">"GeoTIFF files"</li>
                                     {downloads
                                         .into_iter()
-                                        .map(|d| view! { <li><a href=d.url download rel="noopener">{d.label}</a></li> })
+                                        .map(|d| {
+                                            let file = d.clone();
+                                            view! {
+                                                <li>
+                                                    <a
+                                                        href=d.url
+                                                        download
+                                                        rel="noopener"
+                                                        on:click=move |e| {
+                                                            // The file needs its access token first.
+                                                            if file.sign.is_some() {
+                                                                e.prevent_default();
+                                                                m.download(file.clone());
+                                                            }
+                                                        }
+                                                    >
+                                                        {d.label}
+                                                    </a>
+                                                </li>
+                                            }
+                                        })
                                         .collect_view()}
                                 </ul>
                             </details>
