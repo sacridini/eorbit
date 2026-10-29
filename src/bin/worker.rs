@@ -1,6 +1,6 @@
 //! The forecast worker: predicts off the page's thread, reporting progress.
 
-use orbitglobe::wire::{Reply, Request};
+use eorbit::wire::{Reply, Request};
 use orbitui::predict::Job;
 use std::sync::Arc;
 use wasm_bindgen::JsCast;

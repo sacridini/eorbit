@@ -53,7 +53,7 @@ function start() {
     boot();
   } catch (e) {
     viewer = null;
-    console.error("orbitglobe: the globe could not start", e);
+    console.error("EOrbit: the globe could not start", e);
   }
 }
 

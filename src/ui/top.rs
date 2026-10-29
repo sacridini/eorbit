@@ -5,20 +5,82 @@ use crate::model::{Base, Model, View};
 use leptos::html;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
+use std::time::Duration;
 use orbitui::config;
 use orbitui::geocode::Place;
 use orbitui::orbit::{Observer, format_coords};
 use orbitui::tle::Source;
+
+/// Typing pauses this long before the places are looked up.
+const PAUSE: Duration = Duration::from_millis(250);
+/// The geocoder needs this many characters.
+const MIN_CHARS: usize = 2;
 
 #[component]
 pub fn TopBar() -> impl IntoView {
     let m = expect_context::<Model>();
     let query = RwSignal::new(String::new());
     let places = RwSignal::new(Vec::<Place>::new());
+    // The suggestion under the arrow keys.
+    let active = RwSignal::new(None::<usize>);
     let searching = RwSignal::new(false);
+    // Each keystroke makes the lookups started before it stale.
+    let typed = StoredValue::new(0_u64);
     let file_input = NodeRef::<html::Input>::new();
 
+    let show = move |list: Vec<Place>| {
+        active.set(None);
+        places.set(list.into_iter().take(8).collect());
+    };
+
+    // Looks the query up; `enter` when the user asked for it, so that an
+    // empty answer is said and a single place is taken at once.
+    let lookup = move |q: String, enter: bool| {
+        let stamp = typed.get_value();
+        searching.set(true);
+        spawn_local(async move {
+            let found = Model::search(q.clone()).await;
+            if typed.get_value() != stamp {
+                return;
+            }
+            searching.set(false);
+            match found {
+                Ok(list) if enter && list.is_empty() => m.say(format!("No place called “{q}”")),
+                Ok(list) if enter && list.len() == 1 => choose(m, &list[0], query, places),
+                Ok(list) => show(list),
+                Err(e) if enter => m.say(format!("Place search failed: {e}")),
+                Err(_) => show(Vec::new()),
+            }
+        });
+    };
+
+    let on_type = move |text: String| {
+        query.set(text.clone());
+        typed.update_value(|n| *n += 1);
+        let stamp = typed.get_value();
+        let q = text.trim().to_string();
+        if q.chars().count() < MIN_CHARS || config::parse_aoi(&q).is_some() {
+            searching.set(false);
+            show(Vec::new());
+            return;
+        }
+        set_timeout(
+            move || {
+                if typed.get_value() == stamp {
+                    lookup(q, false);
+                }
+            },
+            PAUSE,
+        );
+    };
+
     let submit = move || {
+        typed.update_value(|n| *n += 1);
+        searching.set(false);
+        if let Some(p) = places.with_untracked(|list| list.get(active.get_untracked().unwrap_or(0)).cloned()) {
+            choose(m, &p, query, places);
+            return;
+        }
         let q = query.get_untracked().trim().to_string();
         if q.is_empty() {
             return;
@@ -28,17 +90,16 @@ pub fn TopBar() -> impl IntoView {
             query.set(String::new());
             return;
         }
-        searching.set(true);
-        spawn_local(async move {
-            let found = Model::search(q.clone()).await;
-            searching.set(false);
-            match found {
-                Ok(list) if list.is_empty() => m.say(format!("No place called “{q}”")),
-                Ok(list) if list.len() == 1 => choose(m, &list[0], query, places),
-                Ok(list) => places.set(list.into_iter().take(8).collect()),
-                Err(e) => m.say(format!("Place search failed: {e}")),
-            }
-        });
+        lookup(q, true);
+    };
+
+    let step = move |by: isize| {
+        let n = places.with_untracked(Vec::len) as isize;
+        if n == 0 {
+            return;
+        }
+        let next = active.get_untracked().map_or(if by > 0 { 0 } else { n - 1 }, |i| (i as isize + by).rem_euclid(n));
+        active.set(Some(next as usize));
     };
 
     let area_line = move || {
@@ -50,7 +111,7 @@ pub fn TopBar() -> impl IntoView {
 
     view! {
         <header class="top panel">
-            <div class="wordmark">"orbitglobe"</div>
+            <div class="wordmark">"EOrbit"</div>
             <nav class="tabs" aria-label="Views">
                 {[(View::Globe, "Globe"), (View::Timeline, "Timeline"), (View::Calendar, "Calendar"), (View::Revisit, "Revisit")]
                     .into_iter()
@@ -78,11 +139,30 @@ pub fn TopBar() -> impl IntoView {
                         placeholder="Search a place, or type lat, lon"
                         aria-label="Area of interest"
                         prop:value=query
-                        on:input=move |ev| query.set(event_target_value(&ev))
+                        autocomplete="off"
+                        aria-autocomplete="list"
+                        aria-expanded=move || places.with(|p| !p.is_empty()).to_string()
+                        on:input=move |ev| on_type(event_target_value(&ev))
                         on:keydown=move |ev| match ev.key().as_str() {
                             "Enter" => submit(),
-                            "Escape" => places.set(Vec::new()),
+                            "ArrowDown" => {
+                                ev.prevent_default();
+                                step(1);
+                            }
+                            "ArrowUp" => {
+                                ev.prevent_default();
+                                step(-1);
+                            }
+                            "Escape" => show(Vec::new()),
                             _ => {}
+                        }
+                        // Late enough for a click on a suggestion to land.
+                        on:blur=move |_| set_timeout(move || show(Vec::new()), Duration::from_millis(200))
+                        on:focus=move |_| {
+                            let q = query.get_untracked();
+                            if places.with_untracked(Vec::is_empty) && q.trim().chars().count() >= MIN_CHARS {
+                                on_type(q);
+                            }
                         }
                     />
                     <Show when=move || places.with(|p| !p.is_empty())>
@@ -91,12 +171,22 @@ pub fn TopBar() -> impl IntoView {
                                 places
                                     .get()
                                     .into_iter()
-                                    .map(|p| {
+                                    .enumerate()
+                                    .map(|(i, p)| {
                                         let label = p.label();
                                         let coords = format_coords(p.lat, p.lon);
                                         view! {
-                                            <li>
-                                                <button on:click=move |_| choose(m, &p, query, places)>
+                                            <li role="option" aria-selected=move || (active.get() == Some(i)).to_string()>
+                                                <button
+                                                    tabindex="-1"
+                                                    class:on=move || active.get() == Some(i)
+                                                    on:mouseenter=move |_| active.set(Some(i))
+                                                    on:click=move |_| {
+                                                        typed.update_value(|n| *n += 1);
+                                                        searching.set(false);
+                                                        choose(m, &p, query, places);
+                                                    }
+                                                >
                                                     <span>{label}</span>
                                                     <span class="muted">{coords}</span>
                                                 </button>

@@ -1,8 +1,8 @@
-# orbitglobe
+# EOrbit
 
 When will Sentinel, Landsat, CBERS, MODIS, VIIRS and other Earth observation
-missions image your area? orbitglobe answers on a 3D globe, in the browser:
-<https://sacridini.github.io/orbitglobe/>.
+missions image your area? EOrbit answers on a 3D globe, in the browser:
+<https://sacridini.github.io/eorbit/>.
 
 It is the graphical sibling of [orbitui](https://github.com/sacridini/orbitui),
 the terminal planner, and uses its library for orbits, predictions, the

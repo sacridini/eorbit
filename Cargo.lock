@@ -702,6 +702,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "eorbit"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "console_error_panic_hook",
+ "futures",
+ "js-sys",
+ "leptos",
+ "orbitui",
+ "ratatui",
+ "serde",
+ "serde_json",
+ "sgp4",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
+ "web-time",
+]
+
+[[package]]
 name = "equivalent"
 version = "1.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1683,26 +1703,6 @@ name = "or_poisoned"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8c04f5d74368e4d0dfe06c45c8627c81bd7c317d52762d118fb9b3076f6420fd"
-
-[[package]]
-name = "orbitglobe"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "console_error_panic_hook",
- "futures",
- "js-sys",
- "leptos",
- "orbitui",
- "ratatui",
- "serde",
- "serde_json",
- "sgp4",
- "wasm-bindgen",
- "wasm-bindgen-futures",
- "web-sys",
- "web-time",
-]
 
 [[package]]
 name = "orbitui"

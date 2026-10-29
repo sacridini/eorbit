@@ -5,7 +5,7 @@ use crate::{fetch, globe, quality};
 use chrono::{DateTime, Duration, Utc};
 use leptos::prelude::*;
 use leptos::task::spawn_local;
-use orbitglobe::wire::{Reply, Request};
+use eorbit::wire::{Reply, Request};
 use orbitui::aoi::{self, Shape};
 use orbitui::app::build_sats;
 use orbitui::catalog::{self, SatInfo};
@@ -494,7 +494,7 @@ impl Model {
         let result = self.plans.with_untracked(|plans| {
             self.clouds.with_untracked(|clouds| {
                 let sheet = export::Sheet {
-                    app: "orbitglobe",
+                    app: "eorbit",
                     sats: &sats,
                     observer: &obs,
                     clouds: clouds.as_ref(),

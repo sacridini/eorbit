@@ -1,18 +1,18 @@
 [package]
-name = "orbitglobe"
+name = "eorbit"
 version = "0.1.0"
 edition = "2024"
 publish = false
 description = "Earth observation overpass planner on a 3D globe, in the browser"
 license = "MIT"
-repository = "https://github.com/sacridini/orbitglobe"
-homepage = "https://sacridini.github.io/orbitglobe/"
+repository = "https://github.com/sacridini/eorbit"
+homepage = "https://sacridini.github.io/eorbit/"
 
 [lib]
 path = "src/lib.rs"
 
 [[bin]]
-name = "orbitglobe"
+name = "eorbit"
 path = "src/main.rs"
 
 [[bin]]

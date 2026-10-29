@@ -27,7 +27,7 @@ jobs:
         run: |
           curl -sSL https://github.com/trunk-rs/trunk/releases/download/v0.22.0/trunk-x86_64-unknown-linux-gnu.tar.gz | tar -xz -C /usr/local/bin
       - name: Build
-        run: trunk build --release --public-url /orbitglobe/
+        run: trunk build --release --public-url /eorbit/
       - uses: actions/upload-pages-artifact@v3
         with:
           path: dist

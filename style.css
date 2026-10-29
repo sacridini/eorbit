@@ -1,4 +1,4 @@
-/* orbitglobe. The globe fills the page; the panels float over it
+/* EOrbit. The globe fills the page; the panels float over it
    as tinted glass. Archivo throughout, its width axis doing the work of a
    second typeface: wide for the clock and the wordmark, narrow for dense
    labels. Amber means the area of interest and sunlight; every satellite
@@ -233,7 +233,7 @@ h2 {
   border-radius: 7px;
 }
 
-.places button:hover { background: var(--hover); }
+.places button:hover, .places button.on { background: var(--hover); }
 .places .muted { font-size: 12px; font-stretch: 88%; white-space: nowrap; }
 
 .tool {

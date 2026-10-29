@@ -1,4 +1,4 @@
-//! orbitglobe: the orbitui planner's library under a Leptos interface, on
+//! EOrbit: the orbitui planner's library under a Leptos interface, on
 //! a Cesium globe.
 
 mod color;
