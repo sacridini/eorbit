@@ -1,0 +1,492 @@
+//! The application's state, its downloads and the per-frame work.
+
+use crate::{fetch, globe};
+use chrono::{DateTime, Duration, Utc};
+use leptos::prelude::*;
+use leptos::task::spawn_local;
+use orbitui::aoi::{self, Shape};
+use orbitui::app::build_sats;
+use orbitui::catalog::{self, SatInfo};
+use orbitui::clouds::{self, Clouds};
+use orbitui::geocode::{self, Place};
+use orbitui::orbit::{Observer, Sat};
+use orbitui::predict::{self, Acquisition, Forecast};
+use orbitui::tle::{self, Source};
+use orbitui::{astro, config};
+use sgp4::Elements;
+use std::collections::HashSet;
+use std::sync::Arc;
+
+/// How often the interface follows the simulated time (the globe follows
+/// it every frame).
+const TICK_MS: f64 = 125.0;
+/// Time spent on the forecast per frame.
+const FORECAST_BUDGET: web_time::Duration = web_time::Duration::from_millis(12);
+
+/// Simulated time: real time, shifted, sped up or frozen.
+#[derive(Clone, Copy, Debug)]
+pub struct Clock {
+    real: f64,
+    sim: f64,
+    pub warp: f64,
+    pub paused: bool,
+}
+
+impl Clock {
+    pub fn live() -> Self {
+        let t = js_sys::Date::now();
+        Clock { real: t, sim: t, warp: 1.0, paused: false }
+    }
+
+    pub fn now_ms(&self) -> f64 {
+        if self.paused { self.sim } else { self.sim + (js_sys::Date::now() - self.real) * self.warp }
+    }
+
+    pub fn now(&self) -> DateTime<Utc> {
+        DateTime::from_timestamp_millis(self.now_ms() as i64).unwrap_or_default()
+    }
+
+    fn rebase(&mut self) {
+        self.sim = self.now_ms();
+        self.real = js_sys::Date::now();
+    }
+
+    pub fn set_warp(&mut self, warp: f64) {
+        self.rebase();
+        self.warp = warp;
+        self.paused = false;
+    }
+
+    pub fn toggle(&mut self) {
+        self.rebase();
+        self.paused = !self.paused;
+    }
+
+    pub fn jump(&mut self, t: DateTime<Utc>) {
+        self.rebase();
+        self.sim = t.timestamp_millis() as f64;
+    }
+
+    pub fn is_live(&self) -> bool {
+        !self.paused && self.warp == 1.0 && (self.now_ms() - js_sys::Date::now()).abs() < 2000.0
+    }
+}
+
+/// Where the orbital elements come from.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ElementsStatus {
+    pub source: Source,
+    pub fetched: Option<DateTime<Utc>>,
+    pub updating: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Base {
+    Imagery,
+    Map,
+}
+
+impl Base {
+    pub fn id(self) -> &'static str {
+        match self {
+            Base::Imagery => "imagery",
+            Base::Map => "map",
+        }
+    }
+}
+
+/// An orbit drawn on the globe: whose, and around which time.
+#[derive(Clone, Copy, PartialEq)]
+struct Drawn {
+    norad: u64,
+    at: DateTime<Utc>,
+}
+
+#[derive(Clone, Copy)]
+pub struct Model {
+    pub catalog: RwSignal<Vec<SatInfo>>,
+    elements: StoredValue<Vec<Elements>>,
+    pub sats: RwSignal<Arc<Vec<Sat>>>,
+    pub elements_status: RwSignal<ElementsStatus>,
+    pub observer: RwSignal<Observer>,
+    pub forecast: RwSignal<Option<Arc<Forecast>>>,
+    /// The span of the forecast (computed or in progress).
+    pub window: RwSignal<Option<(DateTime<Utc>, DateTime<Utc>)>>,
+    pub progress: RwSignal<Option<f64>>,
+    job: StoredValue<Option<predict::Job>>,
+    pub clouds: RwSignal<Option<Clouds>>,
+    pub clock: RwSignal<Clock>,
+    /// The simulated time, refreshed a few times a second.
+    pub now: RwSignal<DateTime<Utc>>,
+    /// The selected satellite, by NORAD id.
+    pub selected: RwSignal<Option<u64>>,
+    /// The opportunity being looked at.
+    pub event: RwSignal<Option<Acquisition>>,
+    pub days: RwSignal<f64>,
+    pub min_el: f64,
+    /// List opportunities the sensor cannot use (optical sensors at night).
+    pub show_unusable: RwSignal<bool>,
+    pub only_selected: RwSignal<bool>,
+    pub utc: RwSignal<bool>,
+    pub picking: RwSignal<bool>,
+    pub labels: RwSignal<bool>,
+    pub base: RwSignal<Base>,
+    pub message: RwSignal<Option<(String, f64)>>,
+    drawn: StoredValue<Option<Drawn>>,
+    last_tick: StoredValue<f64>,
+}
+
+impl Model {
+    pub fn new() -> Self {
+        let set = tle::load_local();
+        let (catalog, catalog_error) = catalog::load();
+        let sats = build_sats(&set.elements, &catalog);
+        let observer = config::load().unwrap_or_else(config::default_observer);
+        let clock = Clock::live();
+        let m = Model {
+            selected: RwSignal::new(sats.first().map(|s| s.info.norad)),
+            sats: RwSignal::new(Arc::new(sats)),
+            catalog: RwSignal::new(catalog),
+            elements: StoredValue::new(set.elements.clone()),
+            elements_status: RwSignal::new(ElementsStatus { source: set.source, fetched: set.fetched, updating: false }),
+            observer: RwSignal::new(observer),
+            forecast: RwSignal::new(None),
+            window: RwSignal::new(None),
+            progress: RwSignal::new(None),
+            job: StoredValue::new(None),
+            clouds: RwSignal::new(None),
+            now: RwSignal::new(clock.now()),
+            clock: RwSignal::new(clock),
+            event: RwSignal::new(None),
+            days: RwSignal::new(7.0),
+            min_el: 10.0,
+            show_unusable: RwSignal::new(false),
+            only_selected: RwSignal::new(false),
+            utc: RwSignal::new(false),
+            picking: RwSignal::new(false),
+            labels: RwSignal::new(true),
+            base: RwSignal::new(Base::Imagery),
+            message: RwSignal::new(None),
+            drawn: StoredValue::new(None),
+            last_tick: StoredValue::new(0.0),
+        };
+        if let Some(e) = catalog_error {
+            m.say(e);
+        }
+        if set.is_stale() {
+            m.refresh_elements();
+        } else {
+            m.fetch_missing();
+        }
+        m.fetch_clouds();
+        m
+    }
+
+    pub fn say(self, text: impl Into<String>) {
+        self.message.set(Some((text.into(), js_sys::Date::now())));
+    }
+
+    /// Index of the selected satellite (tracked).
+    pub fn selected_index(self) -> Option<usize> {
+        let norad = self.selected.get()?;
+        self.sats.with(|s| s.iter().position(|s| s.info.norad == norad))
+    }
+
+    pub fn select(self, norad: u64) {
+        self.selected.set(Some(norad));
+    }
+
+    pub fn set_time(self, t: DateTime<Utc>) {
+        self.clock.update(|c| c.jump(t));
+        self.now.set(t);
+    }
+
+    /// Looks at an opportunity: the clock goes to just before it.
+    pub fn open_event(self, a: Acquisition) {
+        if let Some(norad) = self.sats.with_untracked(|s| s.get(a.sat).map(|s| s.info.norad)) {
+            self.selected.set(Some(norad));
+        }
+        self.set_time(a.time - Duration::seconds(90));
+        self.clock.update(|c| c.set_warp(10.0));
+        let obs = self.observer.get_untracked();
+        globe::fly_to(obs.lat, obs.lon, 3_500_000.0, 2.0);
+        self.event.set(Some(a));
+    }
+
+    pub fn set_observer(self, obs: Observer) {
+        config::save(&obs);
+        globe::fly_to(obs.lat, obs.lon, 12_000_000.0, 2.0);
+        self.observer.set(obs);
+        self.event.set(None);
+        self.fetch_clouds();
+        self.request_forecast();
+    }
+
+    /// Sets the AOI from a GeoJSON document.
+    pub fn load_geojson(self, text: &str, fallback_name: &str) {
+        match aoi::parse_geojson(text) {
+            Ok((Shape::Area(area), name)) => {
+                let km2 = area.area_km2;
+                self.set_observer(Observer::with_area(name.unwrap_or_else(|| fallback_name.to_string()), area));
+                self.say(format!("Area of {km2:.0} km² loaded"));
+            }
+            Ok((Shape::Point(lat, lon), name)) => {
+                self.set_observer(Observer::new(name.unwrap_or_else(|| fallback_name.to_string()), lat, lon, 0.0));
+            }
+            Err(e) => self.say(e),
+        }
+    }
+
+    // ---- Forecast ----
+
+    pub fn request_forecast(self) {
+        let now = self.clock.get_untracked().now();
+        let start = now - Duration::hours(1);
+        let end = now + Duration::seconds((self.days.get_untracked() * 86_400.0) as i64);
+        let job = predict::Job::new(self.sats.get_untracked(), self.observer.get_untracked(), start, end, self.min_el);
+        self.job.set_value(Some(job));
+        self.window.set(Some((start, end)));
+        self.forecast.set(None);
+        self.progress.set(Some(0.0));
+    }
+
+    fn step_forecast(self) {
+        let mut out = None;
+        self.job.update_value(|job| {
+            if let Some(j) = job {
+                out = Some((j.step(FORECAST_BUDGET), j.progress()));
+            }
+        });
+        match out {
+            Some((Some(fc), _)) => {
+                self.job.set_value(None);
+                self.progress.set(None);
+                self.forecast.set(Some(Arc::new(fc)));
+            }
+            Some((None, p)) => self.progress.set(Some(p)),
+            None => {}
+        }
+    }
+
+    /// Upcoming opportunities under the list's filters (tracked).
+    pub fn upcoming(self, limit: usize) -> Vec<Acquisition> {
+        let Some(fc) = self.forecast.get() else { return Vec::new() };
+        let now = self.now.get();
+        let unusable = self.show_unusable.get();
+        let only = self.only_selected.get().then(|| self.selected_index()).flatten();
+        let sats = self.sats.get();
+        fc.acquisitions
+            .iter()
+            .filter(|a| a.time >= now - Duration::minutes(2))
+            .filter(|a| only.is_none_or(|i| a.sat == i))
+            .filter(|a| sats.get(a.sat).is_some_and(|s| unusable || a.usable(s.info.kind)))
+            .take(limit)
+            .cloned()
+            .collect()
+    }
+
+    pub fn cloud_at(self, t: DateTime<Utc>) -> Option<f64> {
+        self.clouds.with(|c| c.as_ref().and_then(|c| c.at(t)))
+    }
+
+    // ---- Per frame ----
+
+    /// Starts the loop that moves the globe and advances the forecast.
+    pub fn run(self) {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+        use wasm_bindgen::JsCast;
+        use wasm_bindgen::closure::Closure;
+
+        type Frame = Closure<dyn FnMut()>;
+        let slot: Rc<RefCell<Option<Frame>>> = Rc::new(RefCell::new(None));
+        let again = Rc::clone(&slot);
+        *slot.borrow_mut() = Some(Closure::new(move || {
+            self.frame();
+            if let (Some(w), Some(f)) = (web_sys::window(), again.borrow().as_ref()) {
+                w.request_animation_frame(f.as_ref().unchecked_ref()).ok();
+            }
+        }));
+        if let (Some(w), Some(f)) = (web_sys::window(), slot.borrow().as_ref()) {
+            w.request_animation_frame(f.as_ref().unchecked_ref()).ok();
+        }
+    }
+
+    fn frame(self) {
+        let clock = self.clock.get_untracked();
+        let now = clock.now();
+        let sats = self.sats.get_untracked();
+        globe::update(clock.now_ms(), &globe::positions(&sats, now));
+
+        let real = js_sys::Date::now();
+        if real - self.last_tick.get_value() >= TICK_MS {
+            self.last_tick.set_value(real);
+            self.now.set(now);
+            if self.message.with_untracked(|m| m.as_ref().is_some_and(|(_, at)| real - at > 6000.0)) {
+                self.message.set(None);
+            }
+        }
+
+        // A new forecast when the time leaves the one computed.
+        let outside = self.window.get_untracked().is_some_and(|(a, b)| now < a || now > b - Duration::hours(6));
+        if self.job.with_value(Option::is_none) && (outside || self.window.get_untracked().is_none()) {
+            self.request_forecast();
+        }
+        self.step_forecast();
+        self.draw_orbit(&sats, now);
+    }
+
+    /// Redraws the selected satellite's orbit once the time has moved on.
+    fn draw_orbit(self, sats: &[Sat], now: DateTime<Utc>) {
+        let Some(sat) = self.selected.get_untracked().and_then(|n| sats.iter().find(|s| s.info.norad == n)) else {
+            if self.drawn.get_value().is_some() {
+                globe::clear_orbit();
+                self.drawn.set_value(None);
+            }
+            return;
+        };
+        let period = Duration::seconds((sat.period_minutes() * 60.0) as i64);
+        let fresh = self.drawn.get_value().is_some_and(|d| d.norad == sat.info.norad && (now - d.at).abs() < period / 6);
+        if !fresh {
+            globe::orbit(sat, now - period / 4, now + period);
+            self.drawn.set_value(Some(Drawn { norad: sat.info.norad, at: now }));
+        }
+    }
+
+    /// Forces the orbit to be drawn again (the fleet changed).
+    pub fn redraw_orbit(self) {
+        self.drawn.set_value(None);
+    }
+
+    // ---- Downloads ----
+
+    fn install(self, elements: Vec<Elements>, source: Source, fetched: Option<DateTime<Utc>>) {
+        self.elements.set_value(elements);
+        self.elements_status.set(ElementsStatus { source, fetched, updating: false });
+        self.rebuild();
+    }
+
+    /// Rebuilds the fleet from the catalog and the elements.
+    fn rebuild(self) {
+        let sats = self.elements.with_value(|e| build_sats(e, &self.catalog.get_untracked()));
+        if self.selected.get_untracked().is_none_or(|n| !sats.iter().any(|s| s.info.norad == n)) {
+            self.selected.set(sats.first().map(|s| s.info.norad));
+        }
+        self.event.set(None);
+        self.sats.set(Arc::new(sats));
+        self.redraw_orbit();
+        self.request_forecast();
+    }
+
+    pub fn reload_catalog(self) {
+        let (catalog, error) = catalog::load();
+        self.catalog.set(catalog);
+        if let Some(e) = error {
+            self.say(e);
+        }
+        self.rebuild();
+        self.fetch_missing();
+    }
+
+    /// Downloads the Celestrak groups, then the satellites they lack.
+    pub fn refresh_elements(self) {
+        if self.elements_status.get_untracked().updating {
+            return;
+        }
+        self.elements_status.update(|s| s.updating = true);
+        spawn_local(async move {
+            let wanted: HashSet<u64> = self.catalog.get_untracked().iter().map(|s| s.norad).collect();
+            let answers = futures::future::join_all(tle::GROUPS.iter().map(|g| fetch::text_owned(tle::group_url(g)))).await;
+            let mut found: Vec<Elements> = Vec::new();
+            let mut error = None;
+            for answer in answers {
+                match answer {
+                    Ok(text) => absorb(&mut found, tle::parse(&text), &wanted),
+                    Err(e) => error = Some(e),
+                }
+            }
+            let have: HashSet<u64> = found.iter().map(|e| e.norad_id).collect();
+            let missing: Vec<u64> = wanted.iter().copied().filter(|id| !have.contains(id)).collect();
+            let answers = futures::future::join_all(missing.iter().map(|&id| fetch::text_owned(tle::catnr_url(id)))).await;
+            for text in answers.into_iter().flatten() {
+                absorb(&mut found, tle::parse(&text), &wanted);
+            }
+            if found.is_empty() {
+                self.elements_status.update(|s| s.updating = false);
+                let why = error.unwrap_or_else(|| "no elements".into());
+                self.say(format!("Could not update the orbital elements ({why})"));
+                return;
+            }
+            let set = tle::store(found);
+            self.install(set.elements, set.source, set.fetched);
+        });
+    }
+
+    /// Downloads elements only for satellites that have none.
+    fn fetch_missing(self) {
+        let have: HashSet<u64> = self.elements.with_value(|e| e.iter().map(|e| e.norad_id).collect());
+        let missing: Vec<u64> =
+            self.catalog.get_untracked().iter().map(|s| s.norad).filter(|id| !have.contains(id)).collect();
+        if missing.is_empty() || self.elements_status.get_untracked().updating {
+            return;
+        }
+        self.elements_status.update(|s| s.updating = true);
+        spawn_local(async move {
+            let wanted: HashSet<u64> = missing.iter().copied().collect();
+            let answers = futures::future::join_all(missing.iter().map(|&id| fetch::text_owned(tle::catnr_url(id)))).await;
+            let mut found = self.elements.get_value();
+            for text in answers.into_iter().flatten() {
+                absorb(&mut found, tle::parse(&text), &wanted);
+            }
+            let set = tle::store(found);
+            self.install(set.elements, set.source, set.fetched);
+        });
+    }
+
+    fn fetch_clouds(self) {
+        let obs = self.observer.get_untracked();
+        let at = (obs.lat, obs.lon);
+        if self.clouds.with_untracked(|c| c.as_ref().is_some_and(|c| !c.is_stale(at))) {
+            return;
+        }
+        spawn_local(async move {
+            match fetch::text(&clouds::url(at.0, at.1)).await.and_then(|t| clouds::parse(&t, at)) {
+                Ok(c) if self.observer.with_untracked(|o| (o.lat, o.lon) == at) => self.clouds.set(Some(c)),
+                Ok(_) => {}
+                Err(e) => self.say(format!("No cloud forecast ({e})")),
+            }
+        });
+    }
+
+    /// Places matching a name, best first.
+    pub async fn search(query: String) -> Result<Vec<Place>, String> {
+        let languages = geocode::languages();
+        let answers = futures::future::join_all(languages.iter().map(|l| fetch::text_owned(geocode::url(&query, l)))).await;
+        let mut places = Vec::new();
+        let mut error = None;
+        for answer in answers {
+            match answer.and_then(|t| geocode::parse(&t)) {
+                Ok(found) => geocode::merge(&mut places, found),
+                Err(e) => error = Some(e),
+            }
+        }
+        geocode::rank(&mut places);
+        match (places.is_empty(), error) {
+            (true, Some(e)) => Err(e),
+            _ => Ok(places),
+        }
+    }
+}
+
+fn absorb(found: &mut Vec<Elements>, more: Vec<Elements>, wanted: &HashSet<u64>) {
+    for e in more {
+        if wanted.contains(&e.norad_id) && !found.iter().any(|f| f.norad_id == e.norad_id) {
+            found.push(e);
+        }
+    }
+}
+
+/// Elevation of the Sun at the AOI.
+pub fn sun_elevation(obs: &Observer, t: DateTime<Utc>) -> f64 {
+    astro::sun_elevation(obs.lat, obs.lon, astro::subsolar_point(t))
+}

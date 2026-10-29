@@ -1,0 +1,46 @@
+[package]
+name = "orbitglobe"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "Earth observation overpass planner on a 3D globe, in the browser"
+license = "MIT"
+repository = "https://github.com/sacridini/orbitglobe"
+homepage = "https://sacridini.github.io/orbitglobe/"
+
+[dependencies]
+chrono = { version = "0.4", features = ["wasmbind"] }
+console_error_panic_hook = "0.1"
+futures = { version = "0.3", default-features = false, features = ["std", "async-await"] }
+js-sys = "0.3"
+leptos = { version = "0.8", features = ["csr"] }
+# Orbits, predictions, mission catalogue, clouds and place search.
+orbitui = { git = "https://github.com/sacridini/orbitui" }
+ratatui = { version = "0.30", default-features = false }
+serde_json = "1"
+sgp4 = "2"
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+web-time = "1"
+web-sys = { version = "0.3", features = [
+    "DataTransfer",
+    "DomRect",
+    "DragEvent",
+    "Element",
+    "File",
+    "FileList",
+    "HtmlInputElement",
+    "PointerEvent",
+    "Response",
+    "Window",
+] }
+
+# Propagation runs ~10^6 times per forecast: keep debug builds usable.
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
+
+[profile.release]
+lto = "thin"
