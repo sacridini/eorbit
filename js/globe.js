@@ -44,7 +44,18 @@ const scratch = { position: null, date: null };
 // The viewer starts as soon as this module is loaded, while the WebAssembly
 // is still being fetched and compiled: its shaders and first tiles do not
 // wait for the application.
-boot();
+start();
+
+/// A globe that cannot start (no WebGL, Cesium not loaded) must not take the
+/// application down with it: this module is imported before it runs.
+function start() {
+  try {
+    boot();
+  } catch (e) {
+    viewer = null;
+    console.error("orbitglobe: the globe could not start", e);
+  }
+}
 
 function boot() {
   const Cesium = C();
@@ -131,14 +142,17 @@ function savedArea() {
   return [-15.7939, -47.8828];
 }
 
+/// Whether the globe is running.
 export function init(satCallback, groundCallback) {
   onSat = satCallback;
   onGround = groundCallback;
-  boot();
+  start();
+  if (!viewer) return false;
   drawFleet();
   if (orbit) drawOrbit();
   drawHighlight();
   drawAoi();
+  return true;
 }
 
 export function setBase(name) {

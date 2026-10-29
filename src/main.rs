@@ -39,7 +39,9 @@ fn App() -> impl IntoView {
                 m.set_observer(Observer::new(format_coords(lat, lon), lat, lon, 0.0));
             }
         });
-        globe::init(on_sat.as_ref().unchecked_ref(), on_ground.as_ref().unchecked_ref());
+        if !globe::init(on_sat.as_ref().unchecked_ref(), on_ground.as_ref().unchecked_ref()) {
+            m.say("The 3D globe could not start (WebGL unavailable?); the other views still work");
+        }
         on_sat.forget();
         on_ground.forget();
         m.home();

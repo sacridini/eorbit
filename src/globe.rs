@@ -8,7 +8,7 @@ use wasm_bindgen::prelude::*;
 
 #[wasm_bindgen(module = "/js/globe.js")]
 extern "C" {
-    pub fn init(on_sat: &js_sys::Function, on_ground: &js_sys::Function);
+    pub fn init(on_sat: &js_sys::Function, on_ground: &js_sys::Function) -> bool;
     #[wasm_bindgen(js_name = setBase)]
     pub fn set_base(name: &str);
     #[wasm_bindgen(js_name = setFleet)]
