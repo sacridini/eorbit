@@ -412,11 +412,15 @@ fn downloads(f: &Value, mission: Mission, rendered: Option<&str>, bbox: [f64; 4]
         }
         let label = match key.as_str() {
             "visual" => "Whole scene, true colour, 10 m".to_string(),
+            "red" | "green" | "blue" => format!("Whole scene, {key} band, 10 m"),
+            "nir" => "Whole scene, near infrared, 10 m".to_string(),
             k if k.starts_with("BAND") => format!("Whole scene, band {}", &k[4..]),
             _ => continue,
         };
         list.push(Download::open(label, href));
     }
+    // True colour first (the assets come in alphabetical order).
+    list.sort_by_key(|d| !d.label.contains("true colour"));
     list
 }
 
