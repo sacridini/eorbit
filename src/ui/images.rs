@@ -42,7 +42,8 @@ pub fn Images() -> impl IntoView {
                 return Some(view! { <p class="hint">"Searching the catalogue…"</p> }.into_any());
             }
             if !a.errors.is_empty() {
-                let text = format!("Some missions could not be searched ({})", a.errors.join("; "));
+                let lead = if a.passes.is_empty() { "The catalogue could not be searched" } else { "Some missions could not be searched" };
+                let text = format!("{lead}: {}", a.errors.join("; "));
                 return Some(view! { <p class="hint warn">{text}</p> }.into_any());
             }
             (a.passes.is_empty() && a.since.is_some())

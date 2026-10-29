@@ -461,17 +461,25 @@ impl Model {
         self.archive.set(Archive { key: key.clone(), loading: true, since: Some(start), ..Archive::default() });
         spawn_local(async move {
             let searches = Mission::ALL.map(|mission| {
-                let body = archive::body(mission, &obs, start, end);
-                async move { (mission, fetch::post_json(archive::SEARCH, &body).await) }
+                let url = archive::url(mission, &obs, start, end);
+                async move { (mission, fetch::text_owned(url).await) }
             });
             let answers = futures::future::join_all(searches).await;
             let mut scenes = Vec::new();
             let mut errors = Vec::new();
+            let unreachable = answers.iter().all(|(_, a)| a.as_ref().is_err_and(|e| !e.starts_with("HTTP")));
             for (mission, answer) in answers {
                 match answer.and_then(|text| archive::parse(&text, mission, &obs)) {
                     Ok(found) => scenes.extend(found),
                     Err(e) => errors.push(format!("{}: {e}", mission.label())),
                 }
+            }
+            // No answer at all: the browser did not let the requests out.
+            if unreachable {
+                errors = vec![format!(
+                    "the browser could not reach {} (offline, or blocked by a content blocker or strict tracking protection)",
+                    archive::HOST
+                )];
             }
             if self.archive.with_untracked(|a| a.key != key) {
                 return;

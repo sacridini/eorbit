@@ -7,13 +7,15 @@ use orbitui::aoi;
 use orbitui::orbit::Observer;
 use serde_json::{Value, json};
 
-pub const SEARCH: &str = "https://planetarycomputer.microsoft.com/api/stac/v1/search";
+pub const HOST: &str = "planetarycomputer.microsoft.com";
+const SEARCH: &str = "https://planetarycomputer.microsoft.com/api/stac/v1/search";
 /// The most scenes asked of each mission: a search keeps its latest ones.
 const LIMIT: usize = 250;
 /// Scenes of one overflight (tiles, frames) are this close in time.
 const SAME_PASS_S: i64 = 180;
-/// A shared polygon is thinned to this many vertices per ring.
-const MAX_VERTICES: usize = 400;
+/// The area's polygon is thinned to this many vertices per ring, to keep
+/// the search's address short.
+const MAX_VERTICES: usize = 80;
 /// Side of the rendered previews, in pixels.
 const PREVIEW_PX: u32 = 360;
 
@@ -118,28 +120,40 @@ pub fn same_platform(platform: &str, name: &str) -> bool {
     norm(platform) == norm(name)
 }
 
-/// The search for one mission's scenes over the area, latest first.
-pub fn body(mission: Mission, obs: &Observer, start: DateTime<Utc>, end: DateTime<Utc>) -> String {
+/// The search for one mission's scenes over the area, latest first. A GET
+/// with no headers of its own: browsers send it without asking the server
+/// first (no CORS preflight), which some of them refuse to do.
+pub fn url(mission: Mission, obs: &Observer, start: DateTime<Utc>, end: DateTime<Utc>) -> String {
     let at = |t: DateTime<Utc>| t.to_rfc3339_opts(SecondsFormat::Secs, true);
-    json!({
-        "collections": [mission.collection()],
-        "intersects": geometry(obs),
-        "datetime": format!("{}/{}", at(start), at(end)),
-        "limit": LIMIT,
-        "sortby": [{ "field": "datetime", "direction": "desc" }],
-    })
-    .to_string()
+    format!(
+        "{SEARCH}?collections={}&intersects={}&datetime={}/{}&limit={LIMIT}&sortby=-datetime",
+        mission.collection(),
+        escape(&geometry(obs).to_string()),
+        at(start),
+        at(end)
+    )
+}
+
+/// Percent-encodes all but the characters URLs keep as they are.
+fn escape(text: &str) -> String {
+    text.bytes()
+        .map(|b| match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => char::from(b).to_string(),
+            _ => format!("%{b:02X}"),
+        })
+        .collect()
 }
 
 fn geometry(obs: &Observer) -> Value {
-    let Some(area) = &obs.area else { return json!({ "type": "Point", "coordinates": [obs.lon, obs.lat] }) };
+    let round = |x: f64| (x * 1e5).round() / 1e5;
+    let Some(area) = &obs.area else { return json!({ "type": "Point", "coordinates": [round(obs.lon), round(obs.lat)] }) };
     let polygons: Vec<Value> = area
         .rings
         .iter()
         .filter(|r| r.len() >= 3)
         .map(|ring| {
             let step = ring.len().div_ceil(MAX_VERTICES);
-            let mut coords: Vec<[f64; 2]> = ring.iter().step_by(step).map(|&(lat, lon)| [lon, lat]).collect();
+            let mut coords: Vec<[f64; 2]> = ring.iter().step_by(step).map(|&(lat, lon)| [round(lon), round(lat)]).collect();
             if coords.first() != coords.last() {
                 coords.push(coords[0]);
             }
