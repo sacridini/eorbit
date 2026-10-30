@@ -12,4 +12,6 @@ extern "C" {
     pub fn save(url: &str);
     #[wasm_bindgen(js_name = onHashChange)]
     pub fn on_hash_change(callback: &js_sys::Function);
+    #[wasm_bindgen(js_name = dismissMenus)]
+    pub fn dismiss_menus();
 }

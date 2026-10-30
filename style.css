@@ -1398,13 +1398,27 @@ h2 {
 .scene-meta .muted { font-size: 11.5px; font-stretch: 88%; }
 
 .scene-actions {
+  position: relative;
   display: flex;
+  flex-wrap: wrap;
   gap: 6px;
   padding: 8px 10px 10px;
   margin-top: auto;
 }
 
-.scene-actions .tool { height: 28px; padding: 0 9px; font-size: 12px; text-decoration: none; }
+/* The buttons share the card's width and wrap rather than spill over the
+   next card. */
+.scene-actions > * { flex: 1 1 auto; min-width: 0; }
+
+.scene-actions .tool {
+  justify-content: center;
+  height: 28px;
+  padding: 0 9px;
+  font-size: 12px;
+  text-decoration: none;
+}
+
+.scene-actions .downloads summary { width: 100%; }
 
 /* The image draped over the globe. */
 .stage { gap: 8px; flex-wrap: wrap; }
@@ -1435,7 +1449,8 @@ h2 {
   vertical-align: -2px;
 }
 
-/* A scene's files, in a list over the card's picture. */
+/* A scene's files, in a list over the card's picture, just above its
+   buttons. */
 .downloads summary { list-style: none; cursor: pointer; }
 .downloads summary::-webkit-details-marker { display: none; }
 .downloads[open] summary { color: var(--ink); border-color: var(--line-strong); }
@@ -1445,7 +1460,7 @@ h2 {
   z-index: 5;
   left: 8px;
   right: 8px;
-  bottom: 46px;
+  bottom: calc(100% - 2px);
   max-height: 240px;
   overflow: auto;
   margin: 0;
@@ -1566,3 +1581,73 @@ h2 {
 
 .cloud-slider input:focus-visible { outline: 2px solid var(--amber); outline-offset: 3px; border-radius: 4px; }
 .downloads-head { padding: 4px 8px 6px; font-size: 11.5px; color: var(--muted); }
+
+/* The coverage map over the globe: what it counts, and its legend. */
+.coverage {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-width: 330px;
+  padding: 0 0 9px;
+  border: 1px solid var(--line-strong);
+  border-radius: 9px;
+}
+
+.coverage .sky-tool { border: 0; background: none; height: 34px; }
+.coverage .sky-tool select { flex: 1; min-width: 0; }
+.coverage .segmented { padding: 1px; }
+.coverage .segmented button { padding: 3px 7px; font-size: 12px; }
+
+.coverage-legend { display: flex; flex-direction: column; gap: 6px; padding: 0 10px; }
+
+.coverage-ramp {
+  display: grid;
+  grid-auto-columns: 1fr;
+  grid-auto-flow: column;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.coverage-ramp li { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+
+.coverage-ramp .swatch {
+  width: auto;
+  height: 10px;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.coverage-ramp li:first-child .swatch { border-radius: 4px 0 0 4px; }
+.coverage-ramp li:last-child .swatch { border-radius: 0 4px 4px 0; }
+
+.coverage-ramp li > span:last-child {
+  font-size: 11px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.coverage-note { margin: 0; padding: 0 10px; font-size: 11.5px; line-height: 1.4; color: var(--ink); }
+.coverage-legend .coverage-note { padding: 0; }
+.coverage-note.muted { color: var(--muted); }
+.coverage-note.warn { color: #fca5a5; }
+
+/* The count of the cell under the pointer. */
+.globe-tip {
+  position: fixed;
+  z-index: 50;
+  max-width: 260px;
+  padding: 6px 9px;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  background: var(--panel-solid);
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.35;
+  pointer-events: none;
+  box-shadow: 0 10px 24px -12px #000;
+}
+
+.globe-tip strong { color: var(--ink); font-size: 13px; }

@@ -3,6 +3,7 @@
 
 mod archive;
 mod color;
+mod coverage;
 mod fetch;
 mod fmt;
 mod globe;
@@ -86,6 +87,16 @@ fn App() -> impl IntoView {
     Effect::new(move |_| globe::set_base(m.base.get().id()));
     Effect::new(move |_| globe::set_sky(&m.sky.get().map(Sky::tiles).unwrap_or_default()));
     Effect::new(move |_| globe::set_labels(m.labels.get()));
+    // The coverage map is counted when asked for, and drawn when counted.
+    Effect::new(move |_| {
+        if m.coverage_ask.get().is_some() {
+            untrack(|| m.fetch_coverage());
+        }
+    });
+    Effect::new(move |_| match m.coverage_ask.get() {
+        None => globe::coverage(None),
+        Some(_) => m.coverage.with(|c| if !c.loading && c.error.is_none() { globe::coverage(Some(c)) }),
+    });
     Effect::new(move |_| globe::set_picking(m.picking.get()));
     Effect::new(move |_| {
         let event = m.event.get();
@@ -101,6 +112,7 @@ fn App() -> impl IntoView {
     });
 
     ui::files::accept_drops(m);
+    page::dismiss_menus();
     window_event_listener(leptos::ev::keydown, move |e| {
         let typing = e
             .target()

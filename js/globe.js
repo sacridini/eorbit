@@ -46,7 +46,21 @@ let sceneLayers = [];
 let skyUrl = "";
 let skyLayer = null;
 let sceneEntities = [];
+let coverage = null;
+let coveragePrimitive = null;
+let coverageLabels = null;
+let coverageTip = null;
 const scratch = { position: null, date: null };
+
+// The coverage map's cells, shrunk towards their centre so that a thin gap
+// of map shows between them, and drawn a little above the ground, which
+// their flat triangles would otherwise sink under when seen up close.
+const CELL_SHRINK = 0.92;
+const CELL_HEIGHT_M = 1500;
+const CELL_ALPHA = 0.62;
+// Counts are written on the cells in view below this height, at most so many.
+const LABELS_BELOW_M = 2_200_000;
+const MAX_LABELS = 900;
 
 // The viewer starts as soon as this module is loaded, while the WebAssembly
 // is still being fetched and compiled: its shaders and first tiles do not
@@ -109,6 +123,8 @@ function boot() {
 
   points = scene.primitives.add(new Cesium.PointPrimitiveCollection());
   labels = scene.primitives.add(new Cesium.LabelCollection());
+  coverageLabels = scene.primitives.add(new Cesium.LabelCollection());
+  viewer.camera.moveEnd.addEventListener(labelCoverage);
 
   const handler = new Cesium.ScreenSpaceEventHandler(scene.canvas);
   handler.setInputAction((click) => {
@@ -128,11 +144,15 @@ function boot() {
     const hit = scene.pick(move.endPosition);
     const overSat = Cesium.defined(hit) && hit.id && hit.id.sat !== undefined;
     scene.canvas.style.cursor = overSat ? "pointer" : picking ? "crosshair" : "";
+    const cell = !overSat && Cesium.defined(hit) && hit.id && coverage ? coverage.list[hit.id.cell] : undefined;
+    showTip(cell, move.endPosition);
   }, Cesium.ScreenSpaceEventType.MOUSE_MOVE);
+  scene.canvas.addEventListener("mouseleave", () => showTip(undefined));
 
   setBase(base);
   drawSky();
   drawScenes();
+  drawCoverage();
 }
 
 /// The area of interest saved by the application (orbitui's config), or
@@ -205,6 +225,115 @@ function drawSky() {
   skyLayer.colorToAlpha = Cesium.Color.BLACK;
   skyLayer.colorToAlphaThreshold = 0.03;
   skyLayer.nightAlpha = 1.0;
+}
+
+/// The coverage map: per cell, the number of its corners, the latitude and
+/// longitude of its centre, its count, its class, then its corners as
+/// longitude, latitude; `colors` the class colours, comma separated, and
+/// `what` what a count counts. No cells take it off.
+export function setCoverage(cells, colors, what) {
+  coverage = null;
+  if (cells.length) {
+    const list = [];
+    for (let i = 0; i < cells.length; ) {
+      const corners = cells[i];
+      list.push({
+        lat: cells[i + 1],
+        lon: cells[i + 2],
+        n: cells[i + 3],
+        k: cells[i + 4],
+        ring: Array.from(cells.subarray(i + 5, i + 5 + 2 * corners)),
+      });
+      i += 5 + 2 * corners;
+    }
+    coverage = { list, colors: colors.split(","), what };
+  }
+  drawCoverage();
+}
+
+function drawCoverage() {
+  if (!viewer) return;
+  const Cesium = C();
+  if (coveragePrimitive) viewer.scene.primitives.remove(coveragePrimitive);
+  coveragePrimitive = null;
+  showTip(undefined);
+  if (coverage) {
+    const colors = coverage.colors.map((c) => Cesium.Color.fromCssColorString(c).withAlpha(CELL_ALPHA));
+    const granularity = Cesium.Math.toRadians(0.25);
+    const instances = coverage.list.map((cell, i) => {
+      const centre = Cesium.Cartesian3.fromDegrees(cell.lon, cell.lat);
+      const ring = Cesium.Cartesian3.fromDegreesArray(cell.ring).map((p) => Cesium.Cartesian3.lerp(centre, p, CELL_SHRINK, p));
+      return new Cesium.GeometryInstance({
+        geometry: new Cesium.PolygonGeometry({
+          polygonHierarchy: new Cesium.PolygonHierarchy(ring),
+          height: CELL_HEIGHT_M,
+          granularity,
+          vertexFormat: Cesium.PerInstanceColorAppearance.FLAT_VERTEX_FORMAT,
+        }),
+        attributes: { color: Cesium.ColorGeometryInstanceAttribute.fromColor(colors[cell.k] ?? colors[0]) },
+        id: { cell: i },
+      });
+    });
+    coveragePrimitive = viewer.scene.primitives.add(
+      new Cesium.Primitive({
+        geometryInstances: instances,
+        appearance: new Cesium.PerInstanceColorAppearance({ flat: true, translucent: true }),
+      }),
+    );
+    // The counts and the satellites stay over the cells.
+    for (const top of [coverageLabels, points, labels]) viewer.scene.primitives.raiseToTop(top);
+  }
+  labelCoverage();
+}
+
+/// Writes the counts on the cells in view, when close enough to read them.
+function labelCoverage() {
+  if (!viewer || !coverageLabels) return;
+  const Cesium = C();
+  coverageLabels.removeAll();
+  if (!coverage || viewer.camera.positionCartographic.height > LABELS_BELOW_M) return;
+  const view = viewer.camera.computeViewRectangle();
+  if (!view) return;
+  const [west, south, east, north] = [view.west, view.south, view.east, view.north].map(Cesium.Math.toDegrees);
+  const inLon = (lon) => (west <= east ? lon >= west && lon <= east : lon >= west || lon <= east);
+  const ink = Cesium.Color.fromCssColorString("#e9f0f8");
+  const deep = Cesium.Color.fromCssColorString("#06101c");
+  let shown = 0;
+  for (const cell of coverage.list) {
+    if (cell.lat < south || cell.lat > north || !inLon(cell.lon)) continue;
+    if (++shown > MAX_LABELS) break;
+    coverageLabels.add({
+      position: Cesium.Cartesian3.fromDegrees(cell.lon, cell.lat, CELL_HEIGHT_M * 2),
+      text: String(cell.n),
+      font: '650 13px "Archivo", sans-serif',
+      fillColor: ink,
+      outlineColor: deep,
+      outlineWidth: 3,
+      style: Cesium.LabelStyle.FILL_AND_OUTLINE,
+      horizontalOrigin: Cesium.HorizontalOrigin.CENTER,
+      verticalOrigin: Cesium.VerticalOrigin.CENTER,
+    });
+  }
+}
+
+/// The count of the cell under the pointer, beside it.
+function showTip(cell, at) {
+  if (!cell) {
+    if (coverageTip) coverageTip.hidden = true;
+    return;
+  }
+  if (!coverageTip) {
+    coverageTip = document.createElement("div");
+    coverageTip.className = "globe-tip";
+    coverageTip.append(document.createElement("strong"), document.createElement("span"));
+    document.body.append(coverageTip);
+  }
+  const box = viewer.scene.canvas.getBoundingClientRect();
+  coverageTip.firstChild.textContent = cell.n.toLocaleString();
+  coverageTip.lastChild.textContent = ` ${coverage.what}`;
+  coverageTip.style.left = `${box.left + at.x + 14}px`;
+  coverageTip.style.top = `${box.top + at.y + 14}px`;
+  coverageTip.hidden = false;
 }
 
 /// Acquired scenes draped over the globe: [{tiles (a URL template), west,

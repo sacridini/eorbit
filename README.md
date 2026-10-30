@@ -47,6 +47,11 @@ Four more views share the screen with the opportunities:
 - Daily view: NASA's view of a recent day (Terra or Aqua MODIS, Suomi NPP,
   NOAA-20 or NOAA-21 VIIRS) over the whole globe, to see where the clouds
   were.
+- Coverage: how many scenes Sentinel-2, Landsat or Sentinel-1 (or one of
+  their satellites) acquired over the whole world in the last 1, 2 or 3
+  months, and CBERS-4, CBERS-4A and Amazonia-1 over Brazil, counted in
+  hexagonal cells of about 86,700 km² (H3) and coloured by count; hovering
+  a cell gives its count, and zoomed in each cell shows it.
 
 The page's address follows the screen (area, polygon included, view,
 satellite, opportunity, forecast span), so "Share" copies a link that opens
@@ -74,7 +79,8 @@ trunk build --release
 - `src/bin/worker.rs`, `src/wire.rs`: the forecast's Web Worker and its
   messages.
 - `src/quality.rs`: the score; `src/sky.rs`: the cloud layers;
-  `src/archive.rs`: the acquired scenes; `src/share.rs`: the shared links.
+  `src/archive.rs`: the acquired scenes; `src/coverage.rs`: the coverage
+  map; `src/share.rs`: the shared links.
 - `src/ui/`: the panels and views ([Leptos](https://leptos.dev)).
 - `src/globe.rs`: positions, orbits and swaths computed in Rust for the globe.
 - `js/globe.js`: draws them on [CesiumJS](https://cesium.com/platform/cesiumjs/).
@@ -89,6 +95,9 @@ trunk build --release
   AWS when the browser cannot reach it (privacy extensions often block it);
   INPE's [Brazil Data Cube](https://data.inpe.br/bdc/) for CBERS-4, CBERS-4A
   and Amazonia-1 (Level 4).
+- Coverage map: Earth Search's STAC aggregations (scenes counted by H3 cell,
+  by each scene's centre); the Brazil Data Cube's footprints, counted on the
+  page over each cell's centre. Cells by [h3o](https://github.com/HydroniumLabs/h3o).
 - Daily views: NASA's [GIBS](https://www.earthdata.nasa.gov/gibs) map tiles
   and [Worldview](https://worldview.earthdata.nasa.gov) snapshots (MODIS and
   VIIRS Corrected Reflectance).

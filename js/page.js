@@ -48,3 +48,25 @@ export function save(url) {
 export function onHashChange(callback) {
   addEventListener("hashchange", () => callback(location.hash.slice(1)));
 }
+
+/// Closes an open list of downloads when the user clicks elsewhere or
+/// presses Escape, so that lists do not pile up over the pictures.
+export function dismissMenus() {
+  const close = (keep) => {
+    for (const d of document.querySelectorAll("details.downloads[open]")) {
+      if (!keep || !d.contains(keep)) d.open = false;
+    }
+  };
+  addEventListener("click", (e) => close(e.target));
+  addEventListener("keydown", (e) => {
+    if (e.key === "Escape") close(null);
+  });
+  // One list open at a time.
+  addEventListener(
+    "toggle",
+    (e) => {
+      if (e.target.matches?.("details.downloads") && e.target.open) close(e.target);
+    },
+    true,
+  );
+}

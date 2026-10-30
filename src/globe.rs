@@ -1,6 +1,7 @@
 //! The Cesium globe (`js/globe.js`) and the geometry Rust computes for it.
 
 use crate::color;
+use crate::coverage::{self, Coverage};
 use chrono::{DateTime, Duration, Utc};
 use orbitui::astro::{self, MEAN_RADIUS_KM};
 use orbitui::orbit::{Observer, Sat};
@@ -37,6 +38,10 @@ extern "C" {
     /// NASA's daily view over the globe: its tiles' address, "" for none.
     #[wasm_bindgen(js_name = setSky)]
     pub fn set_sky(url: &str);
+    /// The coverage map: its cells (see coverage::Counts::geometry), the
+    /// colour of each class and what a count counts; no cells take it off.
+    #[wasm_bindgen(js_name = setCoverage)]
+    fn set_coverage(cells: &[f64], colors: &str, what: &str);
     #[wasm_bindgen(js_name = flyToBox)]
     pub fn fly_to_box(west: f64, south: f64, east: f64, north: f64);
     #[wasm_bindgen(js_name = setActive)]
@@ -123,4 +128,15 @@ pub fn aoi(obs: &Observer) {
         .map(|a| a.rings.iter().map(|r| r.iter().flat_map(|&(lat, lon)| [lon, lat]).collect()).collect())
         .unwrap_or_default();
     set_aoi(&obs.name, obs.lat, obs.lon, &serde_json::Value::from(rings).to_string());
+}
+
+/// Draws the coverage map, or takes it off.
+pub fn coverage(map: Option<&Coverage>) {
+    let Some((map, ask)) = map.and_then(|c| Some((c, c.ask?))) else {
+        set_coverage(&[], "", "");
+        return;
+    };
+    let breaks = map.counts.breaks();
+    let what = format!("{} scenes {} in the last {}", ask.source().name(), ask.counted(), ask.span_label());
+    set_coverage(&map.counts.geometry(&breaks), &coverage::RAMP.join(","), &what);
 }

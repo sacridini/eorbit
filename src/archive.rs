@@ -261,7 +261,7 @@ pub fn url(catalogue: Catalogue, mission: Mission, obs: &Observer, start: DateTi
 }
 
 /// Percent-encodes all but the characters URLs keep as they are.
-fn escape(text: &str) -> String {
+pub fn escape(text: &str) -> String {
     text.bytes()
         .map(|b| match b {
             b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => char::from(b).to_string(),

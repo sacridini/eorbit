@@ -83,3 +83,16 @@ pub fn span(d: chrono::Duration) -> String {
         format!("{m} min")
     }
 }
+
+/// 402015 as "402,015".
+pub fn thousands(n: u64) -> String {
+    let digits = n.to_string();
+    let mut out = String::new();
+    for (i, c) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    out
+}

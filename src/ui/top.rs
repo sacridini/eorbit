@@ -1,6 +1,7 @@
 //! The bar at the top: the area of interest, the map and the data status.
 
-use crate::archive::{self, Mission};
+use crate::archive::{self, Catalogue, Mission};
+use crate::coverage::{self, Ask, SOURCES};
 use crate::fmt;
 use crate::model::{Base, Model, Sky, View};
 use leptos::html;
@@ -287,6 +288,7 @@ pub fn GlobeTools() -> impl IntoView {
                 <span>"Reset view"</span>
             </button>
             <SkyTool/>
+            <CoverageTool/>
             <SceneChip/>
         </div>
     }
@@ -345,6 +347,140 @@ fn SkyTool() -> impl IntoView {
             }
             .into_any()
         }
+    }
+}
+
+/// The coverage map: how many scenes a satellite acquired in each cell of
+/// the world in the last months.
+#[component]
+fn CoverageTool() -> impl IntoView {
+    let m = expect_context::<Model>();
+    let set = move |f: &dyn Fn(&mut Ask)| m.coverage_ask.update(|a| if let Some(a) = a { f(a) });
+    move || match m.coverage_ask.get() {
+        None => view! {
+            <button
+                class="tool floating"
+                title="How many scenes each satellite acquired over the world in the last months, by cell"
+                on:click=move |_| m.coverage_ask.set(Some(Ask::DEFAULT))
+            >
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M7 3.5l4 2.3v4.6l-4 2.3-4-2.3V5.8zM17 3.5l4 2.3v4.6l-4 2.3-4-2.3V5.8zM12 12l4 2.3v4.6L12 21.2l-4-2.3v-4.6z"/>
+                </svg>
+                <span>"Coverage"</span>
+            </button>
+        }
+        .into_any(),
+        Some(ask) => {
+            let groups = coverage::MISSIONS.map(|mission| {
+                let options = SOURCES
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, s)| s.mission == mission)
+                    .map(|(i, s)| {
+                        let label = if s.label == "All" { format!("{mission}, all satellites") } else { s.label.to_string() };
+                        view! { <option value=i.to_string() selected={i == ask.source}>{label}</option> }
+                    })
+                    .collect_view();
+                view! { <optgroup label=mission>{options}</optgroup> }
+            });
+            view! {
+                <div class="coverage floating">
+                    <div class="sky-tool" role="group" aria-label="Coverage map">
+                        <select
+                            aria-label="Satellite"
+                            on:change=move |e| {
+                                let i = event_target_value(&e).parse().unwrap_or(0);
+                                set(&|a| a.source = i);
+                            }
+                        >
+                            {groups.into_iter().collect_view()}
+                        </select>
+                        <div class="segmented" role="group" aria-label="Months counted">
+                            {coverage::MONTHS
+                                .into_iter()
+                                .map(|n| {
+                                    view! {
+                                        <button class:on={ask.months == n} title=format!("The last {}", Ask { months: n, ..ask }.span_label()) on:click=move |_| set(&|a| a.months = n)>
+                                            {format!("{n} mo")}
+                                        </button>
+                                    }
+                                })
+                                .collect_view()}
+                        </div>
+                        <button class="close" title="Take the coverage map off" aria-label="Take the coverage map off" on:click=move |_| m.coverage_ask.set(None)>
+                            "×"
+                        </button>
+                    </div>
+                    <CoverageLegend/>
+                </div>
+            }
+            .into_any()
+        }
+    }
+}
+
+/// What the colours of the coverage map count.
+#[component]
+fn CoverageLegend() -> impl IntoView {
+    let m = expect_context::<Model>();
+    move || {
+        m.coverage.with(|c| {
+            let ask = c.ask?;
+            if c.loading {
+                let text = if ask.aggregated() { "Counting the scenes…" } else { "Listing INPE's scenes (up to half a minute)…" };
+                return Some(view! { <p class="coverage-note">{text}</p> }.into_any());
+            }
+            if let Some(e) = &c.error {
+                return Some(view! { <p class="coverage-note warn">{e.clone()}</p> }.into_any());
+            }
+            if c.counts.cells.is_empty() {
+                return Some(view! { <p class="coverage-note">"No scene in this span."</p> }.into_any());
+            }
+            let breaks = c.counts.breaks();
+            let classes = coverage::RAMP
+                .iter()
+                .take(breaks.len() + 1)
+                .enumerate()
+                .map(|(i, color)| {
+                    let from = if i == 0 { 1 } else { breaks[i - 1] };
+                    let range = match breaks.get(i) {
+                        Some(&to) if to - 1 > from => format!("{from}–{}", to - 1),
+                        Some(_) => from.to_string(),
+                        None => format!("{from}+"),
+                    };
+                    view! {
+                        <li>
+                            <span class="swatch" style=format!("background: {color}")></span>
+                            <span>{range}</span>
+                        </li>
+                    }
+                })
+                .collect_view();
+            let how = if ask.aggregated() {
+                "each counted in the cell that holds its centre"
+            } else {
+                "each counted in every cell whose centre it covers"
+            };
+            let total = format!(
+                "{} scenes of {} in the last {}, {how} (cells of about {} km²).",
+                fmt::thousands(c.counts.scenes),
+                ask.source().name(),
+                ask.span_label(),
+                fmt::thousands(coverage::CELL_KM2)
+            );
+            let from = if ask.aggregated() { Catalogue::EarthSearch } else { Catalogue::BrazilDataCube }.label();
+            let note = format!("{from}. Hover a cell for its count; zoom in to read them all.");
+            Some(
+                view! {
+                    <div class="coverage-legend">
+                        <ol class="coverage-ramp" aria-label="Scenes per cell">{classes}</ol>
+                        <p class="coverage-note">{total}</p>
+                        <p class="coverage-note muted">{note}</p>
+                    </div>
+                }
+                .into_any(),
+            )
+        })
     }
 }
 

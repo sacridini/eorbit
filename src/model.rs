@@ -1,6 +1,7 @@
 //! The application's state, its downloads and the per-frame work.
 
 use crate::archive::{self, Catalogue, Mission, Pass};
+use crate::coverage::{self, Coverage};
 use crate::share::{self, Shared};
 use crate::sky::{self, Layers};
 use crate::{color, fetch, globe, page, quality};
@@ -260,6 +261,11 @@ pub struct Model {
     pub archive_days: RwSignal<u32>,
     /// The acquired scene shown on the globe.
     pub scene: RwSignal<Option<Pass>>,
+    /// The coverage map over the globe, when shown: what it counts.
+    pub coverage_ask: RwSignal<Option<coverage::Ask>>,
+    pub coverage: RwSignal<Coverage>,
+    /// Coverage maps already counted, by what they count and when.
+    coverage_cache: StoredValue<Vec<(coverage::Ask, DateTime<Utc>, coverage::Counts)>>,
     /// A shared opportunity, opened when the forecast holds it.
     pending: StoredValue<Option<(u64, DateTime<Utc>)>>,
     drawn: StoredValue<Option<Drawn>>,
@@ -306,6 +312,9 @@ impl Model {
             archive: RwSignal::new(Archive::default()),
             archive_days: RwSignal::new(90),
             scene: RwSignal::new(None),
+            coverage_ask: RwSignal::new(None),
+            coverage: RwSignal::new(Coverage::default()),
+            coverage_cache: StoredValue::new(Vec::new()),
             pending: StoredValue::new(None),
             drawn: StoredValue::new(None),
             last_tick: StoredValue::new(0.0),
@@ -530,6 +539,51 @@ impl Model {
                 since: Some(start),
                 catalogue: Some(catalogue),
             });
+        });
+    }
+
+    /// Counts the scenes of the coverage map asked for, unless it is
+    /// counted already (within the hour).
+    pub fn fetch_coverage(self) {
+        let Some(ask) = self.coverage_ask.get_untracked() else { return };
+        if self.coverage.with_untracked(|c| c.ask == Some(ask) && (c.loading || c.error.is_none())) {
+            return;
+        }
+        let now = Utc::now();
+        let end = ask.span(now).1;
+        let cached = self.coverage_cache.with_value(|c| c.iter().find(|(a, t, _)| *a == ask && *t == end).map(|(.., n)| n.clone()));
+        if let Some(counts) = cached {
+            self.coverage.set(Coverage { ask: Some(ask), counts, ..Coverage::default() });
+            return;
+        }
+        self.coverage.set(Coverage { ask: Some(ask), loading: true, ..Coverage::default() });
+        spawn_local(async move {
+            let answer = if ask.aggregated() {
+                fetch::text(&ask.url(now, 1)).await.and_then(|text| coverage::Counts::parse(&text))
+            } else {
+                coverage_pages(ask, now).await.and_then(|pages| coverage::Counts::footprints(&pages))
+            };
+            if self.coverage_ask.get_untracked() != Some(ask) {
+                return;
+            }
+            let catalogue = if ask.aggregated() { Catalogue::EarthSearch } else { Catalogue::BrazilDataCube };
+            let (counts, error) = match answer {
+                Ok(counts) => (counts, None),
+                Err(e) => (
+                    coverage::Counts::default(),
+                    Some(format!(
+                        "{} could not list the scenes: {e}. Offline, or blocked by a privacy extension?",
+                        catalogue.label()
+                    )),
+                ),
+            };
+            if error.is_none() {
+                self.coverage_cache.update_value(|c| {
+                    c.retain(|(a, t, _)| !(*a == ask && *t == end));
+                    c.push((ask, end, counts.clone()));
+                });
+            }
+            self.coverage.set(Coverage { ask: Some(ask), loading: false, counts, error });
         });
     }
 
@@ -1017,6 +1071,15 @@ impl Model {
             _ => Ok(places),
         }
     }
+}
+
+/// Every page of the Data Cube's scenes for a coverage map: the first
+/// tells how many there are, the others are asked for together.
+async fn coverage_pages(ask: coverage::Ask, now: DateTime<Utc>) -> Result<Vec<String>, String> {
+    let first = fetch::text(&ask.url(now, 1)).await?;
+    let pages = coverage::matched(&first).unwrap_or(0).div_ceil(coverage::PAGE).clamp(1, coverage::MAX_PAGES);
+    let rest = futures::future::join_all((2..=pages).map(|p| fetch::text_owned(ask.url(now, p)))).await;
+    std::iter::once(Ok(first)).chain(rest).collect()
 }
 
 /// One catalogue's scenes over the area and the missions that failed; None
