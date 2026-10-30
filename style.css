@@ -1517,7 +1517,10 @@ h2 {
   border-radius: 7px;
 }
 
-.sky-tool option { color: #000; }
+/* The list opens dark (the page's colour scheme): light text on the panel. */
+.sky-tool option,
+.sky-tool optgroup { color: var(--ink); background: var(--panel-solid); }
+.sky-tool optgroup { color: var(--muted); font-weight: 600; }
 .sky-tool .step { color: var(--muted); }
 .sky-tool .step:hover:not(:disabled) { color: var(--ink); background: var(--hover); }
 
